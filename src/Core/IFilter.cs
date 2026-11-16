@@ -1,12 +1,14 @@
+using System.Collections.Generic;
 using UnityEngine;
 
 namespace CoreGMIC.Core
 {
     public enum FilterCategory
     {
-        None,
-        Lut,
-        Heavy
+        None = 0,
+        Lut = 1,
+        Standard = 2,
+        Heavy = 3
     }
 
     public interface IFilter
@@ -16,9 +18,11 @@ namespace CoreGMIC.Core
         string Description { get; }
         FilterCategory Category { get; }
         bool IsAvailable { get; }
+        IReadOnlyList<FilterParameter> Parameters { get; }
 
         void Initialize();
         void Apply(RenderTexture source, RenderTexture destination);
+        void ResetParameters();
         void Dispose();
     }
 }

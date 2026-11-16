@@ -25,7 +25,15 @@ namespace CoreGMIC.Core
                 return;
             }
 
-            _filters.Add(filter);
+            int insertIdx = _filters.FindIndex(f => (int)f.Category > (int)filter.Category);
+            if (insertIdx >= 0)
+            {
+                _filters.Insert(insertIdx, filter);
+            }
+            else
+            {
+                _filters.Add(filter);
+            }
         }
 
         public static void InitializeAll()
@@ -35,12 +43,42 @@ namespace CoreGMIC.Core
                 try
                 {
                     filter.Initialize();
+                    LoadFilterParameters(filter);
                 }
                 catch (Exception ex)
                 {
                     CoreGMICMod.Instance?.LogError($"Failed to initialize filter '{filter.Id}': {ex}");
                 }
             }
+        }
+
+        public static IFilter GetFilterById(string filterId)
+        {
+            if (string.IsNullOrEmpty(filterId))
+            {
+                return null;
+            }
+
+            return _filters.Find(f => f.Id == filterId);
+        }
+
+        public static FilterParameter GetFilterParameter(string filterId, string paramKey)
+        {
+            IFilter filter = GetFilterById(filterId);
+            if (filter?.Parameters == null || string.IsNullOrEmpty(paramKey))
+            {
+                return null;
+            }
+
+            foreach (FilterParameter param in filter.Parameters)
+            {
+                if (param.Key == paramKey)
+                {
+                    return param;
+                }
+            }
+
+            return null;
         }
 
         public static void SetActiveIndex(int index)
@@ -72,6 +110,59 @@ namespace CoreGMIC.Core
 
             int idx = _filters.FindIndex(f => f.Id == filterId);
             SetActiveIndex(idx);
+        }
+
+        public static void LoadFilterParameters(IFilter filter)
+        {
+            if (filter == null || filter.Parameters == null || CoreGMICMod.Settings?.FilterParameters == null)
+            {
+                return;
+            }
+
+            if (!CoreGMICMod.Settings.FilterParameters.TryGetValue(filter.Id, out Dictionary<string, float> saved))
+            {
+                return;
+            }
+
+            foreach (FilterParameter param in filter.Parameters)
+            {
+                if (saved != null && saved.TryGetValue(param.Key, out float val))
+                {
+                    param.Value = val;
+                    param.ForceApply();
+                }
+            }
+        }
+
+        public static void SaveFilterParameters(IFilter filter)
+        {
+            if (filter == null || filter.Parameters == null || CoreGMICMod.Settings == null)
+            {
+                return;
+            }
+
+            CoreGMICMod.Settings.FilterParameters ??= new Dictionary<string, Dictionary<string, float>>();
+            if (!CoreGMICMod.Settings.FilterParameters.TryGetValue(filter.Id, out Dictionary<string, float> dict) || dict == null)
+            {
+                dict = new Dictionary<string, float>();
+                CoreGMICMod.Settings.FilterParameters[filter.Id] = dict;
+            }
+
+            foreach (FilterParameter param in filter.Parameters)
+            {
+                dict[param.Key] = param.Value;
+            }
+        }
+
+        public static void ResetFilterParameters(IFilter filter)
+        {
+            if (filter == null)
+            {
+                return;
+            }
+
+            filter.ResetParameters();
+            SaveFilterParameters(filter);
         }
 
         public static void DisposeAll()

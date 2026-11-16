@@ -22,6 +22,19 @@ namespace CoreGMIC.LUT
                 wrapMode = TextureWrapMode.Clamp
             };
 
+            FillStrip(tex, colorTransform, size);
+            return tex;
+        }
+
+        public static void FillStrip(Texture2D tex, Func<float, float, float, Color> colorTransform, int size = DefaultSize)
+        {
+            if (tex == null)
+            {
+                return;
+            }
+
+            int width = size * size;
+            int height = size;
             Color[] pixels = new Color[width * height];
             float invMax = 1f / (size - 1);
 
@@ -44,7 +57,6 @@ namespace CoreGMIC.LUT
 
             tex.SetPixels(pixels);
             tex.Apply(false, false);
-            return tex;
         }
     }
 }

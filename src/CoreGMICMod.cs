@@ -8,7 +8,7 @@ using UnityEngine;
 
 namespace CoreGMIC
 {
-    public class CoreGMICMod : Mod, ITogglableMod, ICustomMenuMod, IGlobalSettings<ModSettings>
+    public class CoreGMICMod : Mod, ICustomMenuMod, IGlobalSettings<ModSettings>
     {
         public static CoreGMICMod Instance { get; private set; }
         public static ModSettings Settings { get; private set; } = new ModSettings();
@@ -37,16 +37,7 @@ namespace CoreGMIC
 
             On.GameCameras.SceneInit += OnGameCamerasSceneInit;
             AttachBridgeToMainCamera();
-        }
-
-        public void Unload()
-        {
-            Log("Unloading core.G'MIC...");
-
-            On.GameCameras.SceneInit -= OnGameCamerasSceneInit;
-            DetachBridgeFromMainCamera();
-            FilterManager.DisposeAll();
-            ShaderManager.Unload();
+            ModMenu.RefreshFromManager();
         }
 
         public void OnLoadGlobal(ModSettings s)
@@ -68,6 +59,7 @@ namespace CoreGMIC
         {
             FilterManager.Register(new SinLutFilter());
             FilterManager.Register(new Pixelate3x3Filter());
+            FilterManager.Register(new QuadtreeVariationsFilter());
         }
 
         private void OnGameCamerasSceneInit(On.GameCameras.orig_SceneInit orig, GameCameras self)
@@ -89,21 +81,6 @@ namespace CoreGMIC
             {
                 camObj.AddComponent<PostProcessBridge>();
                 Log("Attached PostProcessBridge to mainCamera.");
-            }
-        }
-
-        private void DetachBridgeFromMainCamera()
-        {
-            if (GameCameras.instance == null || GameCameras.instance.mainCamera == null)
-            {
-                return;
-            }
-
-            PostProcessBridge bridge = GameCameras.instance.mainCamera.GetComponent<PostProcessBridge>();
-            if (bridge != null)
-            {
-                Object.Destroy(bridge);
-                Log("Detached PostProcessBridge from mainCamera.");
             }
         }
     }
