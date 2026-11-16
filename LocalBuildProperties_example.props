@@ -1,0 +1,8 @@
+<Project>
+  <PropertyGroup>
+    <HollowKnightRefs>C:\Program Files (x86)\Steam\steamapps\common\Hollow Knight\hollow_knight_Data\Managed</HollowKnightRefs>
+    <HollowKnightModsDirectory>$(HollowKnightRefs)\Mods</HollowKnightModsDirectory>
+    <ModdingAPI>$(HollowKnightRefs)</ModdingAPI>
+    <VanillaFiles>$(HollowKnightRefs)</VanillaFiles>
+  </PropertyGroup>
+</Project>
