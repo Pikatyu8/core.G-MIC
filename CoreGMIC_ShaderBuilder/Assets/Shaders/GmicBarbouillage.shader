@@ -38,6 +38,7 @@ Shader "CoreGMIC/Barbouillage"
 
     int _PlasmaMode;
     float _DoEqualize;
+    float _FinalPass;
     float _Sigma;
     float _Sharpness;
     float _Anisotropy;
@@ -91,6 +92,40 @@ Shader "CoreGMIC/Barbouillage"
 
         return saturate(rgb + m);
     }
+
+    void ComputeSobelGradients(float2 uv, float2 tx, out float3 dx, out float3 dy)
+    {
+        float3 tl = tex2Dlod(_MainTex, float4(saturate(uv + float2(-tx.x,  tx.y)), 0.0, 0.0)).rgb;
+        float3 tm = tex2Dlod(_MainTex, float4(saturate(uv + float2(  0.0,  tx.y)), 0.0, 0.0)).rgb;
+        float3 tr = tex2Dlod(_MainTex, float4(saturate(uv + float2( tx.x,  tx.y)), 0.0, 0.0)).rgb;
+        float3 ml = tex2Dlod(_MainTex, float4(saturate(uv + float2(-tx.x,   0.0)), 0.0, 0.0)).rgb;
+        float3 mr = tex2Dlod(_MainTex, float4(saturate(uv + float2( tx.x,   0.0)), 0.0, 0.0)).rgb;
+        float3 bl = tex2Dlod(_MainTex, float4(saturate(uv + float2(-tx.x, -tx.y)), 0.0, 0.0)).rgb;
+        float3 bm = tex2Dlod(_MainTex, float4(saturate(uv + float2(  0.0, -tx.y)), 0.0, 0.0)).rgb;
+        float3 br = tex2Dlod(_MainTex, float4(saturate(uv + float2( tx.x, -tx.y)), 0.0, 0.0)).rgb;
+
+        dx = ((tr + 2.0 * mr + br) - (tl + 2.0 * ml + bl)) * 0.125;
+        dy = ((tl + 2.0 * tm + tr) - (bl + 2.0 * bm + br)) * 0.125;
+    }
+
+    float2 GetTangentAndEdge(float2 uv, out float edgeEnergy)
+    {
+        float4 t = tex2Dlod(_TensorTex, float4(uv, 0.0, 0.0));
+        float jxx = t.r;
+        float jxy = t.g;
+        float jyy = t.b;
+        edgeEnergy = (jxx + jyy) * 255.0;
+
+        if (edgeEnergy < 1e-4)
+        {
+            return float2(1.0, 0.0);
+        }
+
+        float angle = 0.5 * atan2(2.0 * jxy, jxx - jyy) + 1.57079632679;
+        float sA, cA;
+        sincos(angle, sA, cA);
+        return float2(cA, sA);
+    }
     ENDCG
 
     SubShader
@@ -130,7 +165,7 @@ Shader "CoreGMIC/Barbouillage"
             ENDCG
         }
 
-        // Pass 1: gradient_norm
+        // Pass 1: Isotropic 3x3 Sobel gradient_norm
         Pass
         {
             CGPROGRAM
@@ -140,14 +175,8 @@ Shader "CoreGMIC/Barbouillage"
 
             float4 fragGradientNorm(v2f i) : SV_Target
             {
-                float2 tx = _MainTex_TexelSize.xy;
-                float3 cxP = tex2D(_MainTex, saturate(i.uv + float2(tx.x, 0.0))).rgb;
-                float3 cxM = tex2D(_MainTex, saturate(i.uv - float2(tx.x, 0.0))).rgb;
-                float3 cyP = tex2D(_MainTex, saturate(i.uv + float2(0.0, tx.y))).rgb;
-                float3 cyM = tex2D(_MainTex, saturate(i.uv - float2(0.0, tx.y))).rgb;
-
-                float3 dx = 0.5 * (cxP - cxM);
-                float3 dy = 0.5 * (cyP - cyM);
+                float3 dx, dy;
+                ComputeSobelGradients(i.uv, _MainTex_TexelSize.xy, dx, dy);
                 float gn = sqrt(dot(dx, dx) + dot(dy, dy));
 
                 return float4(gn, gn, gn, 1.0);
@@ -155,7 +184,7 @@ Shader "CoreGMIC/Barbouillage"
             ENDCG
         }
 
-        // Pass 2: Normalize [0, 1] + Exact Compute Histogram CDF Equalize (Variant B)
+        // Pass 2: Normalize [0, 1] + Luminance CDF Equalize
         Pass
         {
             CGPROGRAM
@@ -189,18 +218,33 @@ Shader "CoreGMIC/Barbouillage"
                     return float4(normRgb, src.a);
                 }
 
-                float3 eqRgb = float3(
-                    SampleCdf(normRgb.r),
-                    SampleCdf(normRgb.g),
-                    SampleCdf(normRgb.b)
-                );
+                float lum = dot(normRgb, float3(0.299, 0.587, 0.114));
+                float eqLum = SampleCdf(lum);
+
+                float3 eqRgb;
+                if (lum > 1e-4)
+                {
+                    float scale = min(eqLum / lum, 2.5);
+                    eqRgb = saturate(normRgb * scale);
+                }
+                else
+                {
+                    eqRgb = float3(eqLum, eqLum, eqLum);
+                }
+
+                if (_FinalPass > 0.5)
+                {
+                    float voidKeep = smoothstep(0.03, 0.16, lum);
+                    eqRgb = lerp(normRgb, eqRgb, 0.42 * voidKeep);
+                    eqRgb = pow(max(eqRgb, 1e-5), 1.18);
+                }
 
                 return float4(eqRgb, src.a);
             }
             ENDCG
         }
 
-        // Pass 3: Engrave Crisp Ridge Sharpen + Clamp
+        // Pass 3: Strong Isotropic 3x3 Gaussian Engrave Sharpen + Clamp
         Pass
         {
             CGPROGRAM
@@ -210,22 +254,26 @@ Shader "CoreGMIC/Barbouillage"
 
             float4 fragEngraveSharpen(v2f i) : SV_Target
             {
-                float2 tx = _MainTex_TexelSize.xy * 0.5;
+                float2 tx = _MainTex_TexelSize.xy;
                 float center = tex2D(_MainTex, i.uv).r;
 
-                float blur = center * 0.4;
-                blur += tex2D(_MainTex, saturate(i.uv + float2(-tx.x, 0.0))).r * 0.15;
-                blur += tex2D(_MainTex, saturate(i.uv + float2( tx.x, 0.0))).r * 0.15;
-                blur += tex2D(_MainTex, saturate(i.uv + float2(0.0, -tx.y))).r * 0.15;
-                blur += tex2D(_MainTex, saturate(i.uv + float2(0.0,  tx.y))).r * 0.15;
+                float blur = center * 0.25;
+                blur += tex2D(_MainTex, saturate(i.uv + float2(-tx.x,  0.0))).r * 0.125;
+                blur += tex2D(_MainTex, saturate(i.uv + float2( tx.x,  0.0))).r * 0.125;
+                blur += tex2D(_MainTex, saturate(i.uv + float2( 0.0, -tx.y))).r * 0.125;
+                blur += tex2D(_MainTex, saturate(i.uv + float2( 0.0,  tx.y))).r * 0.125;
+                blur += tex2D(_MainTex, saturate(i.uv + float2(-tx.x, -tx.y))).r * 0.0625;
+                blur += tex2D(_MainTex, saturate(i.uv + float2( tx.x, -tx.y))).r * 0.0625;
+                blur += tex2D(_MainTex, saturate(i.uv + float2(-tx.x,  tx.y))).r * 0.0625;
+                blur += tex2D(_MainTex, saturate(i.uv + float2( tx.x,  tx.y))).r * 0.0625;
 
-                float sharp = saturate(center + 3.0 * (center - blur));
+                float sharp = saturate(center + 3.2 * (center - blur));
                 return float4(sharp, sharp, sharp, 1.0);
             }
             ENDCG
         }
 
-        // Pass 4: Engrave Threshold (>= 60%) + Add onto Base
+        // Pass 4: Highlight-Aware Engrave Threshold + Add onto Base
         Pass
         {
             CGPROGRAM
@@ -236,15 +284,17 @@ Shader "CoreGMIC/Barbouillage"
             float4 fragEngraveThresholdAndAdd(v2f i) : SV_Target
             {
                 float val = tex2D(_MainTex, i.uv).r;
-                float engraveMask = smoothstep(0.56, 0.64, val) * 0.45;
+                float engraveMask = smoothstep(0.55, 0.72, val);
                 float4 baseCol = tex2D(_BaseTex, i.uv);
+                float baseLum = dot(baseCol.rgb, float3(0.299, 0.587, 0.114));
+                float addStrength = 0.52 * (1.0 - smoothstep(0.45, 0.95, baseLum) * 0.75);
 
-                return float4(saturate(baseCol.rgb + engraveMask), baseCol.a);
+                return float4(saturate(baseCol.rgb + engraveMask * addStrength), baseCol.a);
             }
             ENDCG
         }
 
-        // Pass 5: RGB Structure Tensor (Jxx, Jxy, Jyy)
+        // Pass 5: Isotropic 3x3 Sobel Structure Tensor (Jxx, Jxy, Jyy)
         Pass
         {
             CGPROGRAM
@@ -254,14 +304,8 @@ Shader "CoreGMIC/Barbouillage"
 
             float4 fragStructureTensor(v2f i) : SV_Target
             {
-                float2 tx = _MainTex_TexelSize.xy;
-                float3 cxP = tex2D(_MainTex, saturate(i.uv + float2(tx.x, 0.0))).rgb;
-                float3 cxM = tex2D(_MainTex, saturate(i.uv - float2(tx.x, 0.0))).rgb;
-                float3 cyP = tex2D(_MainTex, saturate(i.uv + float2(0.0, tx.y))).rgb;
-                float3 cyM = tex2D(_MainTex, saturate(i.uv - float2(0.0, tx.y))).rgb;
-
-                float3 dx = 0.5 * (cxP - cxM);
-                float3 dy = 0.5 * (cyP - cyM);
+                float3 dx, dy;
+                ComputeSobelGradients(i.uv, _MainTex_TexelSize.xy, dx, dy);
 
                 return float4(dot(dx, dx), dot(dx, dy), dot(dy, dy), 1.0);
             }
@@ -278,7 +322,7 @@ Shader "CoreGMIC/Barbouillage"
 
             float4 fragBlurTensorH(v2f i) : SV_Target
             {
-                float stepPx = max(0.25, _Sigma * 0.5);
+                float stepPx = max(0.85, _Sigma * 1.8);
                 float2 stepUv = float2(_MainTex_TexelSize.x * stepPx, 0.0);
 
                 static const float weights[5] = { 0.227027, 0.1945946, 0.1216216, 0.054054, 0.016216 };
@@ -307,7 +351,7 @@ Shader "CoreGMIC/Barbouillage"
 
             float4 fragBlurTensorV(v2f i) : SV_Target
             {
-                float stepPx = max(0.25, _Sigma * 0.5);
+                float stepPx = max(0.85, _Sigma * 1.8);
                 float2 stepUv = float2(0.0, _MainTex_TexelSize.y * stepPx);
 
                 static const float weights[5] = { 0.227027, 0.1945946, 0.1216216, 0.054054, 0.016216 };
@@ -326,7 +370,7 @@ Shader "CoreGMIC/Barbouillage"
             ENDCG
         }
 
-        // Pass 8: Anisotropic Paint-Daub LIC Smooth
+        // Pass 8: Bold 16-Step Curved Streamline LIC Anisotropic Smooth
         Pass
         {
             CGPROGRAM
@@ -336,57 +380,85 @@ Shader "CoreGMIC/Barbouillage"
 
             float4 fragAnisotropicSmooth(v2f i) : SV_Target
             {
-                float4 center = tex2D(_MainTex, i.uv);
-                float4 tensor = tex2D(_TensorTex, i.uv);
-
-                float jxx = tensor.r;
-                float jxy = tensor.g;
-                float jyy = tensor.b;
-
-                float trace = jxx + jyy;
-                float diff = jxx - jyy;
-                float angleRad = 0.5 * atan2(2.0 * jxy, diff) + 1.57079632679;
-
-                float sA, cA;
-                sincos(angleRad, sA, cA);
-                float2 tVec = float2(cA, sA) * _MainTex_TexelSize.xy;
-                float2 nVec = float2(-sA, cA) * _MainTex_TexelSize.xy;
-
-                float edgeStrength = trace * 255.0;
-                float sharpExp = _Sharpness * 0.012;
-                float edgeStop = pow(1.0 + edgeStrength, -sharpExp);
+                float4 center = tex2Dlod(_MainTex, float4(i.uv, 0.0, 0.0));
+                float centerEdge;
+                float2 t0 = GetTangentAndEdge(i.uv, centerEdge);
+                float2 n0 = float2(-t0.y, t0.x);
 
                 float anisoNorm = saturate(_Anisotropy * 2.0);
-                float lenT = _Dl * 0.5 * (0.6 + 0.8 * anisoNorm);
-                float lenN = _Dl * 0.5 * lerp(1.0, 0.08, anisoNorm) * edgeStop;
+                float baseStepPx = max(0.25, _Dl * 0.34);
+                float sharpColor = _Sharpness * 0.0010;
+                float sharpEdge = _Sharpness * 0.004;
 
-                float bilateralSharp = _Sharpness * 0.08;
+                float3 sumRgb = center.rgb;
+                float sumW = 1.0;
 
-                float3 sumRgb = float3(0.0, 0.0, 0.0);
-                float sumW = 0.0;
-
+                // Forward streamline (16 curved steps)
+                float2 posF = i.uv;
+                float2 curTF = t0;
                 [unroll]
-                for (int ny = -1; ny <= 1; ny++)
+                for (int kf = 1; kf <= 16; kf++)
                 {
-                    [unroll]
-                    for (int tx = -2; tx <= 2; tx++)
-                    {
-                        float2 offset = tVec * ((float)tx * lenT) + nVec * ((float)ny * lenN);
-                        float2 suv = saturate(i.uv + offset);
-                        float3 sRgb = tex2Dlod(_MainTex, float4(suv, 0.0, 0.0)).rgb;
+                    float stepEdge;
+                    float2 nextT = GetTangentAndEdge(posF, stepEdge);
+                    if (dot(nextT, curTF) < 0.0) nextT = -nextT;
+                    curTF = nextT;
 
-                        float spatialW = exp(-0.35 * (float)(tx * tx) - 0.8 * (float)(ny * ny));
-                        float3 dc = sRgb - center.rgb;
-                        float rangeW = exp(-dot(dc, dc) * bilateralSharp);
+                    float brake = pow(1.0 + stepEdge, -sharpEdge);
+                    posF = saturate(posF + curTF * (_MainTex_TexelSize.xy * baseStepPx * lerp(1.0, brake, 0.25)));
 
-                        float w = spatialW * rangeW;
-                        sumRgb += sRgb * w;
-                        sumW += w;
-                    }
+                    float3 sRgb = tex2Dlod(_MainTex, float4(posF, 0.0, 0.0)).rgb;
+                    float3 dc = sRgb - center.rgb;
+                    float edgeJump = abs(stepEdge - centerEdge);
+                    float edgeGuard = exp(-edgeJump * 0.04 * (_Sharpness * 0.01));
+                    float w = exp(-0.009 * (float)(kf * kf)) * exp(-dot(dc, dc) * sharpColor) * edgeGuard;
+
+                    sumRgb += sRgb * w;
+                    sumW += w;
                 }
 
-                float3 result = (sumW > 1e-5) ? (sumRgb / sumW) : center.rgb;
-                return float4(result, center.a);
+                // Backward streamline (16 curved steps)
+                float2 posB = i.uv;
+                float2 curTB = -t0;
+                [unroll]
+                for (int kb = 1; kb <= 16; kb++)
+                {
+                    float stepEdge;
+                    float2 nextT = GetTangentAndEdge(posB, stepEdge);
+                    if (dot(nextT, curTB) < 0.0) nextT = -nextT;
+                    curTB = nextT;
+
+                    float brake = pow(1.0 + stepEdge, -sharpEdge);
+                    posB = saturate(posB + curTB * (_MainTex_TexelSize.xy * baseStepPx * lerp(1.0, brake, 0.25)));
+
+                    float3 sRgb = tex2Dlod(_MainTex, float4(posB, 0.0, 0.0)).rgb;
+                    float3 dc = sRgb - center.rgb;
+                    float edgeJump = abs(stepEdge - centerEdge);
+                    float edgeGuard = exp(-edgeJump * 0.04 * (_Sharpness * 0.01));
+                    float w = exp(-0.009 * (float)(kb * kb)) * exp(-dot(dc, dc) * sharpColor) * edgeGuard;
+
+                    sumRgb += sRgb * w;
+                    sumW += w;
+                }
+
+                // Lateral diffusion controlled by (1 - Anisotropy) and edge stopping
+                float lateralScale = (1.0 - anisoNorm) * pow(1.0 + centerEdge, -sharpEdge * 2.0);
+                if (lateralScale > 0.02)
+                {
+                    float2 latOff = n0 * (_MainTex_TexelSize.xy * baseStepPx * 1.5 * lateralScale);
+                    float3 sP = tex2Dlod(_MainTex, float4(saturate(i.uv + latOff), 0.0, 0.0)).rgb;
+                    float3 sM = tex2Dlod(_MainTex, float4(saturate(i.uv - latOff), 0.0, 0.0)).rgb;
+
+                    float3 dcP = sP - center.rgb;
+                    float3 dcM = sM - center.rgb;
+                    float wP = 0.65 * lateralScale * exp(-dot(dcP, dcP) * sharpColor);
+                    float wM = 0.65 * lateralScale * exp(-dot(dcM, dcM) * sharpColor);
+
+                    sumRgb += sP * wP + sM * wM;
+                    sumW += wP + wM;
+                }
+
+                return float4(sumRgb / max(1e-5, sumW), center.a);
             }
             ENDCG
         }

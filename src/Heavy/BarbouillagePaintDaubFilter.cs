@@ -18,6 +18,8 @@ namespace CoreGMIC.Heavy
         private int _kernelBuildCdf;
 
         private ComputeBuffer _statsHistBuffer;
+        private ComputeBuffer _cdfHistoryBuffer;
+        private bool _hasFinalHistory;
         private RenderTexture _cdfRt;
         private Texture2D _plasmaTexture;
 
@@ -25,16 +27,16 @@ namespace CoreGMIC.Heavy
 
         private int _iterations = 2;
         private int _amplitude = 2;
-        private int _sharpness = 100;
-        private float _anisotropy = 0.2f;
+        private int _sharpness = 0;
+        private float _anisotropy = 0.0f;
         private float _sigma = 1.0f;
-        private float _dl = 4.0f;
+        private float _dl = 3.0f;
         private bool _equalize = true;
         private int _plasmaMode = 0;
         private int _scalePlasma = 8;
 
         public string Id => "samj_barbouillage_paint_daub";
-        public string DisplayName => "Barbouillage Paint Daub";
+        public string DisplayName => "Barbouillage Daub";
         public string Description => "Painterly engraving and anisotropic paint-daub stylization (GPU Compute equalize + LIC).";
         public FilterCategory Category => FilterCategory.Heavy;
         public bool IsAvailable => _material != null && _histogramCompute != null && SystemInfo.supportsComputeShaders;
@@ -60,14 +62,14 @@ namespace CoreGMIC.Heavy
                 "sharpness",
                 "Sharpness",
                 "Edge preservation strength during paint-daub smoothing.",
-                0, 500, 100,
+                0, 500, 0,
                 v => _sharpness = v));
 
             _parameters.Add(FilterParameter.Float(
                 "anisotropy",
                 "Anisotropy",
                 "Directional elongation of brush strokes along edges.",
-                0f, 0.5f, 0.2f,
+                0f, 0.5f, 0.0f,
                 v => _anisotropy = v));
 
             _parameters.Add(FilterParameter.Float(
@@ -81,7 +83,7 @@ namespace CoreGMIC.Heavy
                 "dl",
                 "Dl",
                 "Brush stroke integration step length.",
-                0f, 10f, 4.0f,
+                0f, 10f, 3.0f,
                 v => _dl = v));
 
             _parameters.Add(FilterParameter.Bool(
@@ -145,6 +147,8 @@ namespace CoreGMIC.Heavy
             _kernelBuildCdf = _histogramCompute.FindKernel("CSBuildCdf");
 
             _statsHistBuffer = new ComputeBuffer(HistogramBufferCount, sizeof(uint));
+            _cdfHistoryBuffer = new ComputeBuffer(256, sizeof(float) * 4);
+            _hasFinalHistory = false;
             _cdfRt = new RenderTexture(256, 1, 0, RenderTextureFormat.ARGBFloat, RenderTextureReadWrite.Linear)
             {
                 enableRandomWrite = true,
@@ -184,6 +188,13 @@ namespace CoreGMIC.Heavy
                 rtA.wrapMode = TextureWrapMode.Clamp;
                 rtB.wrapMode = TextureWrapMode.Clamp;
 
+                tensorA = RenderTexture.GetTemporary(w, h, 0, tensorFormat, RenderTextureReadWrite.Linear);
+                tensorB = RenderTexture.GetTemporary(w, h, 0, tensorFormat, RenderTextureReadWrite.Linear);
+                tensorA.filterMode = FilterMode.Bilinear;
+                tensorB.filterMode = FilterMode.Bilinear;
+                tensorA.wrapMode = TextureWrapMode.Clamp;
+                tensorB.wrapMode = TextureWrapMode.Clamp;
+
                 // 1. Optional plasma HSL remix (Pass 0).
                 RenderTexture baseSource = source;
                 if (_plasmaMode > 0 && _plasmaTexture != null)
@@ -206,24 +217,38 @@ namespace CoreGMIC.Heavy
                     // Pass 1: gradient_norm
                     Graphics.Blit(edgeCurr, edgeNext, _material, 1);
 
-                    // Compute exact min/max + 256-bin histogram + CDF
-                    ComputeHistogramCdf(edgeNext);
+                    // Compute exact min/max + 256-bin luminance histogram + CDF
+                    ComputeHistogramCdf(edgeNext, isFinalPass: false);
                     RenderTexture normOut = (edgeNext == rtA) ? rtB : rtA;
                     _material.SetTexture("_CdfTex", _cdfRt);
                     _material.SetFloat("_DoEqualize", 1f);
+                    _material.SetFloat("_FinalPass", 0f);
                     Graphics.Blit(edgeNext, normOut, _material, 2);
 
                     edgeCurr = normOut;
                     edgeNext = (edgeCurr == rtA) ? rtB : rtA;
                 }
 
-                // 3. GPU approximation of engrave_modifie (4x crisp sharpen + threshold & add).
+                // 3. GPU approximation of engrave_modifie (4x sharpen + directional smooth + threshold & add).
                 for (int s = 0; s < 4; s++)
                 {
                     Graphics.Blit(edgeCurr, edgeNext, _material, 3);
                     edgeCurr = edgeNext;
                     edgeNext = (edgeCurr == rtA) ? rtB : rtA;
                 }
+
+                // Connect stipple into engraving contour lines before thresholding (mirrors engrave_modifie's internal smooth).
+                _material.SetFloat("_Sigma", 1.2f);
+                _material.SetFloat("_Sharpness", 100f);
+                _material.SetFloat("_Anisotropy", 0.45f);
+                _material.SetFloat("_Dl", 5.5f);
+                Graphics.Blit(edgeCurr, tensorA, _material, 5);
+                Graphics.Blit(tensorA, tensorB, _material, 6);
+                Graphics.Blit(tensorB, tensorA, _material, 7);
+                _material.SetTexture("_TensorTex", tensorA);
+                Graphics.Blit(edgeCurr, edgeNext, _material, 8);
+                edgeCurr = edgeNext;
+                edgeNext = (edgeCurr == rtA) ? rtB : rtA;
 
                 // Pass 4: threshold (>= 60%) + add onto baseSource.
                 _material.SetTexture("_BaseTex", baseSource);
@@ -232,16 +257,9 @@ namespace CoreGMIC.Heavy
                 RenderTexture paintCurr = edgeNext;
                 RenderTexture paintNext = (paintCurr == rtA) ? rtB : rtA;
 
-                // 4. Anisotropic smooth (structure tensor + separable blur + LIC passes).
+                // 4. Anisotropic paint-daub smooth (structure tensor + separable blur + curved LIC passes).
                 if (_amplitude > 0 && _dl > 0.01f)
                 {
-                    tensorA = RenderTexture.GetTemporary(w, h, 0, tensorFormat, RenderTextureReadWrite.Linear);
-                    tensorB = RenderTexture.GetTemporary(w, h, 0, tensorFormat, RenderTextureReadWrite.Linear);
-                    tensorA.filterMode = FilterMode.Bilinear;
-                    tensorB.filterMode = FilterMode.Bilinear;
-                    tensorA.wrapMode = TextureWrapMode.Clamp;
-                    tensorB.wrapMode = TextureWrapMode.Clamp;
-
                     _material.SetFloat("_Sigma", _sigma);
                     _material.SetFloat("_Sharpness", _sharpness);
                     _material.SetFloat("_Anisotropy", _anisotropy);
@@ -249,10 +267,8 @@ namespace CoreGMIC.Heavy
 
                     for (int passIdx = 0; passIdx < _amplitude; passIdx++)
                     {
-                        // Pass 5: Structure tensor
                         Graphics.Blit(paintCurr, tensorA, _material, 5);
 
-                        // Pass 6 & 7: Separable Gaussian blur of tensor by _Sigma
                         RenderTexture smoothedTensor = tensorA;
                         if (_sigma > 0.05f)
                         {
@@ -261,7 +277,6 @@ namespace CoreGMIC.Heavy
                             smoothedTensor = tensorA;
                         }
 
-                        // Pass 8: Anisotropic LIC smoothing step
                         _material.SetTexture("_TensorTex", smoothedTensor);
                         Graphics.Blit(paintCurr, paintNext, _material, 8);
 
@@ -270,10 +285,11 @@ namespace CoreGMIC.Heavy
                     }
                 }
 
-                // 5. Final normalize [0, 1] + optional exact histogram equalize (Pass 2).
-                ComputeHistogramCdf(paintCurr);
+                // 5. Final normalize [0, 1] + optional histogram equalize (Pass 2).
+                ComputeHistogramCdf(paintCurr, isFinalPass: true);
                 _material.SetTexture("_CdfTex", _cdfRt);
                 _material.SetFloat("_DoEqualize", _equalize ? 1f : 0f);
+                _material.SetFloat("_FinalPass", 1f);
                 Graphics.Blit(paintCurr, destination, _material, 2);
             }
             finally
@@ -308,6 +324,13 @@ namespace CoreGMIC.Heavy
                 _statsHistBuffer = null;
             }
 
+            if (_cdfHistoryBuffer != null)
+            {
+                _cdfHistoryBuffer.Release();
+                _cdfHistoryBuffer = null;
+            }
+            _hasFinalHistory = false;
+
             if (_cdfRt != null)
             {
                 _cdfRt.Release();
@@ -324,7 +347,7 @@ namespace CoreGMIC.Heavy
             _histogramCompute = null;
         }
 
-        private void ComputeHistogramCdf(RenderTexture input)
+        private void ComputeHistogramCdf(RenderTexture input, bool isFinalPass)
         {
             int w = input.width;
             int h = input.height;
@@ -333,6 +356,9 @@ namespace CoreGMIC.Heavy
 
             _histogramCompute.SetInt("_Width", w);
             _histogramCompute.SetInt("_Height", h);
+            _histogramCompute.SetInt("_IsFinalPass", isFinalPass ? 1 : 0);
+            _histogramCompute.SetInt("_ResetHistory", !_hasFinalHistory ? 1 : 0);
+            _histogramCompute.SetFloat("_TemporalAlpha", 0.15f);
 
             _histogramCompute.SetBuffer(_kernelClear, "_StatsAndHist", _statsHistBuffer);
             _histogramCompute.Dispatch(_kernelClear, 2, 1, 1);
@@ -346,8 +372,14 @@ namespace CoreGMIC.Heavy
             _histogramCompute.Dispatch(_kernelHistogram, groupsX, groupsY, 1);
 
             _histogramCompute.SetBuffer(_kernelBuildCdf, "_StatsAndHist", _statsHistBuffer);
+            _histogramCompute.SetBuffer(_kernelBuildCdf, "_CdfHistory", _cdfHistoryBuffer);
             _histogramCompute.SetTexture(_kernelBuildCdf, "_CdfTex", _cdfRt);
             _histogramCompute.Dispatch(_kernelBuildCdf, 1, 1, 1);
+
+            if (isFinalPass)
+            {
+                _hasFinalHistory = true;
+            }
         }
 
         private void RebuildPlasmaTexture()
