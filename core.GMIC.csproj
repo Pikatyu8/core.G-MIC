@@ -66,6 +66,10 @@
     </Reference>
   </ItemGroup>
 
+  <ItemGroup>
+    <EmbeddedResource Include="Assets\Build\win\gmicshaders" Condition="Exists('Assets\Build\win\gmicshaders')" />
+  </ItemGroup>
+
   <Target Name="PostBuild" AfterTargets="PostBuildEvent" Condition="Exists('$(HollowKnightModsDirectory)')">
     <MakeDir Directories="$(HollowKnightModsDirectory)\core.GMIC" />
     <Copy SourceFiles="$(TargetPath);$(TargetDir)$(TargetName).pdb" DestinationFolder="$(HollowKnightModsDirectory)\core.GMIC" />

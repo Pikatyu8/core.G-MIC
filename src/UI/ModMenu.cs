@@ -27,10 +27,10 @@ namespace CoreGMIC.UI
                 )
             };
 
-            List<string> filterNames = new List<string> { "None (Original)" };
+            List<string> filterNames = new List<string> { "None" };
             foreach (IFilter filter in FilterManager.Filters)
             {
-                string availability = filter.IsAvailable ? "" : " [Unavailable]";
+                string availability = filter.IsAvailable ? "" : " [N/A]";
                 filterNames.Add($"{filter.DisplayName}{availability}");
             }
 
@@ -45,8 +45,6 @@ namespace CoreGMIC.UI
                 },
                 () => FilterManager.ActiveFilterIndex + 1
             ));
-
-            elements.Add(new TextPanel("Filters apply only to the gameplay camera (HUD stays sharp)."));
 
             _menuRef = new Menu("core.G'MIC", elements.ToArray());
             return _menuRef.GetMenuScreen(modListMenu);

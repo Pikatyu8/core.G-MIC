@@ -1,5 +1,7 @@
 using System.Reflection;
 using CoreGMIC.Core;
+using CoreGMIC.Heavy;
+using CoreGMIC.LUT;
 using CoreGMIC.UI;
 using Modding;
 using UnityEngine;
@@ -27,6 +29,7 @@ namespace CoreGMIC
         {
             Log("Initializing core.G'MIC post-processing bridge...");
 
+            ShaderManager.LoadShaders();
             RegisterBuiltInFilters();
             FilterManager.InitializeAll();
             FilterManager.IsEnabled = Settings.Enabled;
@@ -43,6 +46,7 @@ namespace CoreGMIC
             On.GameCameras.SceneInit -= OnGameCamerasSceneInit;
             DetachBridgeFromMainCamera();
             FilterManager.DisposeAll();
+            ShaderManager.Unload();
         }
 
         public void OnLoadGlobal(ModSettings s)
@@ -62,7 +66,8 @@ namespace CoreGMIC
 
         private void RegisterBuiltInFilters()
         {
-            // Test and ported filters will be registered here in Step 3+.
+            FilterManager.Register(new SinLutFilter());
+            FilterManager.Register(new Pixelate3x3Filter());
         }
 
         private void OnGameCamerasSceneInit(On.GameCameras.orig_SceneInit orig, GameCameras self)
