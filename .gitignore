@@ -58,4 +58,6 @@ CoreGMIC_ShaderBuilder/*.sln
 CoreGMIC_ShaderBuilder/.collabignore
 CoreGMIC_ShaderBuilder/ProjectSettings
 CoreGMIC_ShaderBuilder/**/*.meta
-CoreGMIC_ShaderBuilder/Assets/BundleOutput
+CoreGMIC_ShaderBuilder/Assets/BundleOutput/
+CoreGMIC_ShaderBuilder/Assets/Scenes/
+CoreGMIC_ShaderBuilder/Assets/Build/
