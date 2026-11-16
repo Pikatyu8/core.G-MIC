@@ -12,6 +12,10 @@
   <Import Project="LocalBuildProperties.props" Condition="Exists('LocalBuildProperties.props')" />
 
   <ItemGroup>
+  <Compile Remove="CoreGMIC_ShaderBuilder\**" />
+  <Content Remove="CoreGMIC_ShaderBuilder\**" />
+  <EmbeddedResource Remove="CoreGMIC_ShaderBuilder\**" />
+  <None Remove="CoreGMIC_ShaderBuilder\**"  />
     <Reference Include="Assembly-CSharp">
       <HintPath>$(ModdingAPI)\Assembly-CSharp.dll</HintPath>
       <Private>false</Private>
