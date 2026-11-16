@@ -9,6 +9,7 @@ namespace CoreGMIC.Core
     {
         private static AssetBundle _bundle;
         private static readonly Dictionary<string, Shader> _shaders = new Dictionary<string, Shader>();
+        private static readonly Dictionary<string, ComputeShader> _computeShaders = new Dictionary<string, ComputeShader>();
 
         public static void LoadShaders()
         {
@@ -80,6 +81,16 @@ namespace CoreGMIC.Core
                     CoreGMICMod.Instance?.Log($"Loaded shader: {shader.name} (supported: {shader.isSupported})");
                 }
             }
+
+            ComputeShader[] loadedCompute = _bundle.LoadAllAssets<ComputeShader>();
+            foreach (ComputeShader cs in loadedCompute)
+            {
+                if (cs != null)
+                {
+                    _computeShaders[cs.name] = cs;
+                    CoreGMICMod.Instance?.Log($"Loaded compute shader: {cs.name}");
+                }
+            }
         }
 
         public static Shader GetShader(string shaderName)
@@ -92,9 +103,20 @@ namespace CoreGMIC.Core
             return null;
         }
 
+        public static ComputeShader GetComputeShader(string computeShaderName)
+        {
+            if (_computeShaders.TryGetValue(computeShaderName, out ComputeShader cs) && cs != null)
+            {
+                return cs;
+            }
+
+            return null;
+        }
+
         public static void Unload()
         {
             _shaders.Clear();
+            _computeShaders.Clear();
 
             if (_bundle != null)
             {

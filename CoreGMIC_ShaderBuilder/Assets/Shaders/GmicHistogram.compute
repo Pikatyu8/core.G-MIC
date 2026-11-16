@@ -1,0 +1,138 @@
+#pragma kernel CSClear
+#pragma kernel CSReduceMinMax
+#pragma kernel CSHistogram
+#pragma kernel CSBuildCdf
+
+Texture2D<float4> _InputTex;
+RWStructuredBuffer<uint> _StatsAndHist; // [0]=minUint, [1]=maxUint, [2..257]=hist[0..255]
+RWTexture2D<float4> _CdfTex;           // 256x1: (cdfNorm, minVal, maxVal, 1)
+
+int _Width;
+int _Height;
+
+groupshared uint gsMin[256];
+groupshared uint gsMax[256];
+groupshared uint gsHist[256];
+groupshared uint gsCdf[256];
+groupshared uint gsMinCdf;
+
+[numthreads(256, 1, 1)]
+void CSClear(uint3 dtid : SV_DispatchThreadID)
+{
+    if (dtid.x == 0u)
+    {
+        _StatsAndHist[0] = 0x7F7FFFFFu; // FLT_MAX
+    }
+    else if (dtid.x == 1u)
+    {
+        _StatsAndHist[1] = 0u; // 0.0f
+    }
+    else if (dtid.x < 258u)
+    {
+        _StatsAndHist[dtid.x] = 0u;
+    }
+}
+
+[numthreads(16, 16, 1)]
+void CSReduceMinMax(uint3 dtid : SV_DispatchThreadID, uint gi : SV_GroupIndex)
+{
+    if (dtid.x < (uint)_Width && dtid.y < (uint)_Height)
+    {
+        float3 rgb = clamp(_InputTex[dtid.xy].rgb, 0.0, 1e6);
+        float cMin = min(rgb.r, min(rgb.g, rgb.b));
+        float cMax = max(rgb.r, max(rgb.g, rgb.b));
+        gsMin[gi] = asuint(cMin);
+        gsMax[gi] = asuint(cMax);
+    }
+    else
+    {
+        gsMin[gi] = 0x7F7FFFFFu;
+        gsMax[gi] = 0u;
+    }
+
+    GroupMemoryBarrierWithGroupSync();
+
+    [unroll]
+    for (uint stride = 128u; stride > 0u; stride >>= 1u)
+    {
+        if (gi < stride)
+        {
+            gsMin[gi] = min(gsMin[gi], gsMin[gi + stride]);
+            gsMax[gi] = max(gsMax[gi], gsMax[gi + stride]);
+        }
+        GroupMemoryBarrierWithGroupSync();
+    }
+
+    if (gi == 0u)
+    {
+        InterlockedMin(_StatsAndHist[0], gsMin[0]);
+        InterlockedMax(_StatsAndHist[1], gsMax[0]);
+    }
+}
+
+[numthreads(16, 16, 1)]
+void CSHistogram(uint3 dtid : SV_DispatchThreadID, uint gi : SV_GroupIndex)
+{
+    gsHist[gi] = 0u;
+    GroupMemoryBarrierWithGroupSync();
+
+    if (dtid.x < (uint)_Width && dtid.y < (uint)_Height)
+    {
+        float minV = asfloat(_StatsAndHist[0]);
+        float maxV = asfloat(_StatsAndHist[1]);
+        float invRange = 1.0 / max(1e-5, maxV - minV);
+
+        float3 rgb = clamp(_InputTex[dtid.xy].rgb, 0.0, 1e6);
+        uint bR = min(255u, (uint)(saturate((rgb.r - minV) * invRange) * 255.0 + 0.5));
+        uint bG = min(255u, (uint)(saturate((rgb.g - minV) * invRange) * 255.0 + 0.5));
+        uint bB = min(255u, (uint)(saturate((rgb.b - minV) * invRange) * 255.0 + 0.5));
+
+        InterlockedAdd(gsHist[bR], 1u);
+        InterlockedAdd(gsHist[bG], 1u);
+        InterlockedAdd(gsHist[bB], 1u);
+    }
+
+    GroupMemoryBarrierWithGroupSync();
+    InterlockedAdd(_StatsAndHist[2u + gi], gsHist[gi]);
+}
+
+[numthreads(256, 1, 1)]
+void CSBuildCdf(uint gi : SV_GroupIndex)
+{
+    gsCdf[gi] = _StatsAndHist[2u + gi];
+    GroupMemoryBarrierWithGroupSync();
+
+    [unroll]
+    for (uint offset = 1u; offset < 256u; offset <<= 1u)
+    {
+        uint val = (gi >= offset) ? gsCdf[gi - offset] : 0u;
+        GroupMemoryBarrierWithGroupSync();
+        gsCdf[gi] += val;
+        GroupMemoryBarrierWithGroupSync();
+    }
+
+    if (gi == 0u)
+    {
+        uint firstNz = 0u;
+        for (uint k = 0u; k < 256u; k++)
+        {
+            if (gsCdf[k] > 0u)
+            {
+                firstNz = gsCdf[k];
+                break;
+            }
+        }
+        gsMinCdf = firstNz;
+    }
+    GroupMemoryBarrierWithGroupSync();
+
+    uint total = gsCdf[255];
+    uint denom = (total > gsMinCdf) ? (total - gsMinCdf) : 0u;
+    float cdfNorm = (denom > 0u && gsCdf[gi] >= gsMinCdf)
+        ? ((float)(gsCdf[gi] - gsMinCdf) / (float)denom)
+        : 0.0;
+
+    float minV = asfloat(_StatsAndHist[0]);
+    float maxV = asfloat(_StatsAndHist[1]);
+    _CdfTex[uint2(gi, 0)] = float4(saturate(cdfNorm), minV, maxV, 1.0);
+}

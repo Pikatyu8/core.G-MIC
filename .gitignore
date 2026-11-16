@@ -1,0 +1,61 @@
+# Build outputs
+[Bb]in/
+[Oo]bj/
+[Dd]ebug/
+[Rr]elease/
+x64/
+x86/
+*.dll
+*.pdb
+*.exe
+*.zip
+
+# Test & coverage results
+TestResults/
+coverage*.xml
+coverage*.json
+*.trx
+*.coverage
+*.coveragexml
+
+# Visual Studio / Rider / VS Code
+.vs/
+.vscode/
+.idea/
+*.user
+*.suo
+*.sln.docstates
+*.userosscache
+*.DotSettings.user
+
+# NuGet / caches
+packages/
+*.nupkg
+*.snupkg
+project.lock.json
+project.fragment.lock.json
+artifacts/
+
+# Local dev / UnityExplorer dumps
+fsm_dump_*.txt
+bundler.py
+bundler_tree.py
+bundle.txt*
+
+# OS junk
+.DS_Store
+Thumbs.db
+
+LocalBuildProperties.props
+CoreGMIC_ShaderBuilder/Library/
+CoreGMIC_ShaderBuilder/Temp/
+CoreGMIC_ShaderBuilder/Logs/
+CoreGMIC_ShaderBuilder/Obj/
+CoreGMIC_ShaderBuilder/UserSettings/
+CoreGMIC_ShaderBuilder/.vs/
+CoreGMIC_ShaderBuilder/*.csproj
+CoreGMIC_ShaderBuilder/*.sln
+CoreGMIC_ShaderBuilder/.collabignore
+CoreGMIC_ShaderBuilder/ProjectSettings
+CoreGMIC_ShaderBuilder/**/*.meta
+CoreGMIC_ShaderBuilder/Assets/BundleOutput
