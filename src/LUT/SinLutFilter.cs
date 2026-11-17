@@ -8,28 +8,28 @@ namespace CoreGMIC.LUT
     {
         private Material _material;
         private Texture2D _lutTexture;
-        private float _frequency = 255f;
+        private int _oscillations = 81;
         private float _intensity = 1f;
 
         private readonly List<FilterParameter> _parameters = new List<FilterParameter>();
 
         public string Id => "test_sin_lut";
         public string DisplayName => "|sin(RGB)| LUT";
-        public string Description => "Test LUT filter computing (|sin(R*f)|, |sin(G*f)|, |sin(B*f)|).";
+        public string Description => "Test LUT filter computing |sin(channel * N * PI)|.";
         public FilterCategory Category => FilterCategory.Lut;
         public bool IsAvailable => _material != null && _lutTexture != null;
         public IReadOnlyList<FilterParameter> Parameters => _parameters;
 
         public SinLutFilter()
         {
-            _parameters.Add(FilterParameter.Float(
-                "frequency",
-                "Sin Frequency",
-                "Multiplier inside |sin(channel * frequency)|.",
-                1f, 255f, 255f,
+            _parameters.Add(FilterParameter.Int(
+                "oscillations",
+                "Oscillations (xPI)",
+                "Number of |sin| half-wave oscillations across [0, 1] (multiplied by PI).",
+                1, 85, 81,
                 val =>
                 {
-                    _frequency = val;
+                    _oscillations = val;
                     RebuildLut();
                 }));
 
@@ -56,7 +56,7 @@ namespace CoreGMIC.LUT
                 return;
             }
 
-            _lutTexture = LutTextureGenerator.GenerateStrip((r, g, b) => EvaluateColor(r, g, b, _frequency));
+            _lutTexture = LutTextureGenerator.GenerateStrip((r, g, b) => EvaluateColor(r, g, b, _oscillations));
 
             _material = new Material(shader);
             _material.SetTexture("_LutTex", _lutTexture);
@@ -99,12 +99,13 @@ namespace CoreGMIC.LUT
                 return;
             }
 
-            float freq = _frequency;
-            LutTextureGenerator.FillStrip(_lutTexture, (r, g, b) => EvaluateColor(r, g, b, freq));
+            int oscillations = _oscillations;
+            LutTextureGenerator.FillStrip(_lutTexture, (r, g, b) => EvaluateColor(r, g, b, oscillations));
         }
 
-        private static Color EvaluateColor(float r, float g, float b, float freq)
+        private static Color EvaluateColor(float r, float g, float b, int oscillations)
         {
+            float freq = oscillations * Mathf.PI;
             float nr = Mathf.Abs(Mathf.Sin(r * freq));
             float ng = Mathf.Abs(Mathf.Sin(g * freq));
             float nb = Mathf.Abs(Mathf.Sin(b * freq));
