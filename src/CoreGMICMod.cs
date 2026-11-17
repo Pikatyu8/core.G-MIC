@@ -61,6 +61,7 @@ namespace CoreGMIC
             FilterManager.Register(new Pixelate3x3Filter());
             FilterManager.Register(new QuadtreeVariationsFilter());
             FilterManager.Register(new BarbouillagePaintDaubFilter());
+            FilterManager.Register(new ChalkItUpFilter());
         }
 
         private void OnGameCamerasSceneInit(On.GameCameras.orig_SceneInit orig, GameCameras self)
