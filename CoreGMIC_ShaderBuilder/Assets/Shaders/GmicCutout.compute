@@ -1,0 +1,569 @@
+#pragma kernel CSInitCentroids
+#pragma kernel CSClearKMeans
+#pragma kernel CSKMeansStep
+#pragma kernel CSKMeansUpdate
+#pragma kernel CSSmoothCentroids
+#pragma kernel CSCCLInit
+#pragma kernel CSCCLMergeBorders
+#pragma kernel CSCCLFlattenAndCount
+#pragma kernel CSClearAreaHist
+#pragma kernel CSAreaHist
+#pragma kernel CSAreaFindMedian
+#pragma kernel CSBuildHoleSeeds
+#pragma kernel CSReduceMinMax
+#pragma kernel CSSmoothMinMax
+
+Texture2D<float4> _InputTex;
+SamplerState sampler_InputTex;
+Texture2D<float4> _QuantTex;
+
+RWStructuredBuffer<float4> _TargetCentroids;
+RWStructuredBuffer<float4> _Centroids;
+RWStructuredBuffer<uint> _KMeansAccum;     // 32 * 4 uints: sumR, sumG, sumB, count
+RWStructuredBuffer<uint> _MaxErrorSample;  // [0]: (quantDist << 12) | sampleIdx
+RWStructuredBuffer<uint> _ParentBuffer;
+RWStructuredBuffer<uint> _AreaBuffer;
+RWStructuredBuffer<uint> _AreaHist;        // 64 bins
+RWStructuredBuffer<uint> _StatsBuf;        // [0]=minUint, [1]=maxUint, [2]=areaThresholdBits
+RWStructuredBuffer<float4> _TemporalState; // x=minV, y=maxV, z=areaThreshold
+RWTexture2D<float4> _JfaOutTex;
+
+int _Width;
+int _Height;
+int _NumLevels;
+float _EdgeSimplicity;
+float _TemporalAlpha;
+int _ResetHistory;
+int _ResetAreaHistory;
+int _ResetMinMaxHistory;
+
+groupshared float3 gsSamples[256];
+groupshared float gsMinDist[256];
+groupshared float gsRedVal[256];
+groupshared uint gsRedIdx[256];
+
+groupshared uint gsAccum[128]; // 32 * 4
+groupshared uint gsColor[256];
+groupshared uint gsParent[256];
+groupshared uint gsHist[64];
+groupshared uint gsMin[256];
+groupshared uint gsMax[256];
+
+uint GsFind(uint x)
+{
+    uint p = gsParent[x];
+    for (int iter = 0; iter < 64; iter++)
+    {
+        if (p == x)
+            break;
+        x = p;
+        p = gsParent[x];
+    }
+    return x;
+}
+
+void GsUnion(uint a, uint b)
+{
+    uint ra = GsFind(a);
+    uint rb = GsFind(b);
+    for (int iter = 0; iter < 64; iter++)
+    {
+        if (ra == rb)
+            break;
+
+        if (ra < rb)
+        {
+            uint old;
+            InterlockedMin(gsParent[rb], ra, old);
+            if (old == rb)
+                break;
+            rb = GsFind(old);
+        }
+        else
+        {
+            uint old;
+            InterlockedMin(gsParent[ra], rb, old);
+            if (old == ra)
+                break;
+            ra = GsFind(old);
+        }
+    }
+}
+
+uint GlobalFind(uint x)
+{
+    uint p = _ParentBuffer[x];
+    for (int iter = 0; iter < 256; iter++)
+    {
+        if (p == x)
+            break;
+        x = p;
+        p = _ParentBuffer[x];
+    }
+    return x;
+}
+
+void GlobalUnion(uint a, uint b)
+{
+    uint ra = GlobalFind(a);
+    uint rb = GlobalFind(b);
+    for (int iter = 0; iter < 256; iter++)
+    {
+        if (ra == rb)
+            break;
+
+        if (ra < rb)
+        {
+            uint old;
+            InterlockedMin(_ParentBuffer[rb], ra, old);
+            if (old == rb)
+                break;
+            rb = GlobalFind(old);
+        }
+        else
+        {
+            uint old;
+            InterlockedMin(_ParentBuffer[ra], rb, old);
+            if (old == ra)
+                break;
+            ra = GlobalFind(old);
+        }
+    }
+}
+
+// Deterministic Farthest-Point Sampling on a 16x16 grid for stable K-Means initialization.
+[numthreads(256, 1, 1)]
+void CSInitCentroids(uint gi : SV_GroupIndex)
+{
+    float2 uv = float2((float)(gi % 16u) + 0.5, (float)(gi / 16u) + 0.5) / 16.0;
+    float3 rgb = saturate(_InputTex.SampleLevel(sampler_InputTex, uv, 0.0).rgb);
+
+    gsSamples[gi] = rgb;
+    gsMinDist[gi] = 1e20;
+    gsRedVal[gi] = dot(rgb, float3(0.299, 0.587, 0.114));
+    gsRedIdx[gi] = gi;
+    GroupMemoryBarrierWithGroupSync();
+
+    // Pick darkest sample as centroid 0.
+    [unroll]
+    for (uint stride0 = 128u; stride0 > 0u; stride0 >>= 1u)
+    {
+        if (gi < stride0 && gsRedVal[gi + stride0] < gsRedVal[gi])
+        {
+            gsRedVal[gi] = gsRedVal[gi + stride0];
+            gsRedIdx[gi] = gsRedIdx[gi + stride0];
+        }
+        GroupMemoryBarrierWithGroupSync();
+    }
+
+    uint cIdx = gsRedIdx[0];
+    if (gi == 0u)
+    {
+        float4 c0 = float4(gsSamples[cIdx], 1.0);
+        _TargetCentroids[0] = c0;
+        _Centroids[0] = c0;
+    }
+    GroupMemoryBarrierWithGroupSync();
+
+    int count = clamp(_NumLevels, 2, 32);
+    for (int k = 1; k < count; k++)
+    {
+        float3 prevCentroid = gsSamples[cIdx];
+        float3 d = gsSamples[gi] - prevCentroid;
+        gsMinDist[gi] = min(gsMinDist[gi], dot(d, d));
+        gsRedVal[gi] = gsMinDist[gi];
+        gsRedIdx[gi] = gi;
+        GroupMemoryBarrierWithGroupSync();
+
+        [unroll]
+        for (uint stride = 128u; stride > 0u; stride >>= 1u)
+        {
+            if (gi < stride && gsRedVal[gi + stride] > gsRedVal[gi])
+            {
+                gsRedVal[gi] = gsRedVal[gi + stride];
+                gsRedIdx[gi] = gsRedIdx[gi + stride];
+            }
+            GroupMemoryBarrierWithGroupSync();
+        }
+
+        cIdx = gsRedIdx[0];
+        if (gi == 0u)
+        {
+            float4 ck = float4(gsSamples[cIdx], 1.0);
+            _TargetCentroids[k] = ck;
+            _Centroids[k] = ck;
+        }
+        GroupMemoryBarrierWithGroupSync();
+    }
+}
+
+[numthreads(32, 1, 1)]
+void CSClearKMeans(uint gi : SV_GroupIndex)
+{
+    _KMeansAccum[gi * 4u + 0u] = 0u;
+    _KMeansAccum[gi * 4u + 1u] = 0u;
+    _KMeansAccum[gi * 4u + 2u] = 0u;
+    _KMeansAccum[gi * 4u + 3u] = 0u;
+
+    if (gi == 0u)
+    {
+        _MaxErrorSample[0] = 0u;
+    }
+}
+
+[numthreads(16, 16, 1)]
+void CSKMeansStep(uint3 dtid : SV_DispatchThreadID, uint gi : SV_GroupIndex)
+{
+    if (gi < 128u)
+    {
+        gsAccum[gi] = 0u;
+    }
+    GroupMemoryBarrierWithGroupSync();
+
+    if (dtid.x < 64u && dtid.y < 64u)
+    {
+        float2 uv = (float2(dtid.xy) + 0.5) / 64.0;
+        float3 rgb = saturate(_InputTex.SampleLevel(sampler_InputTex, uv, 0.0).rgb);
+
+        int count = clamp(_NumLevels, 2, 32);
+        int bestK = 0;
+        float bestD2 = 1e20;
+
+        for (int k = 0; k < count; k++)
+        {
+            float3 diff = rgb - _TargetCentroids[k].rgb;
+            float d2 = dot(diff, diff);
+            if (d2 < bestD2)
+            {
+                bestD2 = d2;
+                bestK = k;
+            }
+        }
+
+        uint rFix = (uint)(rgb.r * 4096.0 + 0.5);
+        uint gFix = (uint)(rgb.g * 4096.0 + 0.5);
+        uint bFix = (uint)(rgb.b * 4096.0 + 0.5);
+
+        uint baseOff = (uint)bestK * 4u;
+        InterlockedAdd(gsAccum[baseOff + 0u], rFix);
+        InterlockedAdd(gsAccum[baseOff + 1u], gFix);
+        InterlockedAdd(gsAccum[baseOff + 2u], bFix);
+        InterlockedAdd(gsAccum[baseOff + 3u], 1u);
+
+        uint sampleIdx = dtid.y * 64u + dtid.x;
+        uint qDist = min(65535u, (uint)(bestD2 * 21845.0));
+        InterlockedMax(_MaxErrorSample[0], (qDist << 12u) | sampleIdx);
+    }
+
+    GroupMemoryBarrierWithGroupSync();
+
+    if (gi < 128u)
+    {
+        InterlockedAdd(_KMeansAccum[gi], gsAccum[gi]);
+    }
+}
+
+[numthreads(32, 1, 1)]
+void CSKMeansUpdate(uint gi : SV_GroupIndex)
+{
+    if ((int)gi >= _NumLevels)
+        return;
+
+    uint baseOff = gi * 4u;
+    uint cnt = _KMeansAccum[baseOff + 3u];
+    if (cnt > 0u)
+    {
+        float invDenom = 1.0 / ((float)cnt * 4096.0);
+        float3 avg = float3(
+            (float)_KMeansAccum[baseOff + 0u] * invDenom,
+            (float)_KMeansAccum[baseOff + 1u] * invDenom,
+            (float)_KMeansAccum[baseOff + 2u] * invDenom
+        );
+        _TargetCentroids[gi] = float4(saturate(avg), 1.0);
+    }
+    else
+    {
+        uint maxPacked = _MaxErrorSample[0];
+        float maxDistSq = (float)(maxPacked >> 12u) / 21845.0;
+        if (maxDistSq > 0.02)
+        {
+            uint errSample = (maxPacked + gi * 257u) & 4095u;
+            float2 uv = float2((float)(errSample & 63u) + 0.5, (float)(errSample >> 6u) + 0.5) / 64.0;
+            float3 rgb = saturate(_InputTex.SampleLevel(sampler_InputTex, uv, 0.0).rgb);
+            _TargetCentroids[gi] = float4(rgb, 1.0);
+        }
+    }
+}
+
+[numthreads(32, 1, 1)]
+void CSSmoothCentroids(uint gi : SV_GroupIndex)
+{
+    if ((int)gi >= _NumLevels)
+        return;
+
+    float4 target = _TargetCentroids[gi];
+    if (_ResetHistory > 0)
+    {
+        _Centroids[gi] = target;
+    }
+    else
+    {
+        _Centroids[gi] = lerp(_Centroids[gi], target, _TemporalAlpha);
+    }
+}
+
+[numthreads(16, 16, 1)]
+void CSCCLInit(uint3 dtid : SV_DispatchThreadID, uint3 gtid : SV_GroupThreadID, uint3 gid : SV_GroupID, uint gi : SV_GroupIndex)
+{
+    bool inBounds = (dtid.x < (uint)_Width && dtid.y < (uint)_Height);
+    gsColor[gi] = inBounds
+        ? min(31u, (uint)floor(_QuantTex[dtid.xy].a * 32.0))
+        : 0xFFFFFFFFu;
+    gsParent[gi] = gi;
+    GroupMemoryBarrierWithGroupSync();
+
+    if (inBounds)
+    {
+        uint myCol = gsColor[gi];
+        if (gtid.x > 0u && gsColor[gi - 1u] == myCol)
+            GsUnion(gi, gi - 1u);
+        if (gtid.y > 0u && gsColor[gi - 16u] == myCol)
+            GsUnion(gi, gi - 16u);
+        if (gtid.x > 0u && gtid.y > 0u && gsColor[gi - 17u] == myCol)
+            GsUnion(gi, gi - 17u);
+        if (gtid.x < 15u && gtid.y > 0u && gsColor[gi - 15u] == myCol)
+            GsUnion(gi, gi - 15u);
+    }
+    GroupMemoryBarrierWithGroupSync();
+
+    if (inBounds)
+    {
+        uint lr = GsFind(gi);
+        uint rx = gid.x * 16u + (lr & 15u);
+        uint ry = gid.y * 16u + (lr >> 4u);
+        uint globalIdx = dtid.y * (uint)_Width + dtid.x;
+        _ParentBuffer[globalIdx] = ry * (uint)_Width + rx;
+        _AreaBuffer[globalIdx] = 0u;
+    }
+}
+
+[numthreads(16, 16, 1)]
+void CSCCLMergeBorders(uint3 dtid : SV_DispatchThreadID, uint3 gtid : SV_GroupThreadID)
+{
+    if (dtid.x >= (uint)_Width || dtid.y >= (uint)_Height)
+        return;
+
+    if (gtid.x != 0u && gtid.y != 0u)
+        return;
+
+    uint w = (uint)_Width;
+    uint h = (uint)_Height;
+    uint idx = dtid.y * w + dtid.x;
+    uint myCol = min(31u, (uint)floor(_QuantTex[dtid.xy].a * 32.0));
+
+    if (gtid.x == 0u && dtid.x > 0u)
+    {
+        uint2 pL = uint2(dtid.x - 1u, dtid.y);
+        if (min(31u, (uint)floor(_QuantTex[pL].a * 32.0)) == myCol)
+            GlobalUnion(idx, pL.y * w + pL.x);
+
+        if (dtid.y > 0u)
+        {
+            uint2 pLD = uint2(dtid.x - 1u, dtid.y - 1u);
+            if (min(31u, (uint)floor(_QuantTex[pLD].a * 32.0)) == myCol)
+                GlobalUnion(idx, pLD.y * w + pLD.x);
+        }
+
+        if (dtid.y + 1u < h)
+        {
+            uint2 pLU = uint2(dtid.x - 1u, dtid.y + 1u);
+            if (min(31u, (uint)floor(_QuantTex[pLU].a * 32.0)) == myCol)
+                GlobalUnion(idx, pLU.y * w + pLU.x);
+        }
+    }
+
+    if (gtid.y == 0u && dtid.y > 0u)
+    {
+        uint2 pD = uint2(dtid.x, dtid.y - 1u);
+        if (min(31u, (uint)floor(_QuantTex[pD].a * 32.0)) == myCol)
+            GlobalUnion(idx, pD.y * w + pD.x);
+
+        if (dtid.x > 0u)
+        {
+            uint2 pLD = uint2(dtid.x - 1u, dtid.y - 1u);
+            if (min(31u, (uint)floor(_QuantTex[pLD].a * 32.0)) == myCol)
+                GlobalUnion(idx, pLD.y * w + pLD.x);
+        }
+
+        if (dtid.x + 1u < w)
+        {
+            uint2 pRD = uint2(dtid.x + 1u, dtid.y - 1u);
+            if (min(31u, (uint)floor(_QuantTex[pRD].a * 32.0)) == myCol)
+                GlobalUnion(idx, pRD.y * w + pRD.x);
+        }
+    }
+}
+
+[numthreads(16, 16, 1)]
+void CSCCLFlattenAndCount(uint3 dtid : SV_DispatchThreadID)
+{
+    if (dtid.x >= (uint)_Width || dtid.y >= (uint)_Height)
+        return;
+
+    uint idx = dtid.y * (uint)_Width + dtid.x;
+    uint root = GlobalFind(idx);
+    _ParentBuffer[idx] = root;
+    InterlockedAdd(_AreaBuffer[root], 1u);
+}
+
+[numthreads(64, 1, 1)]
+void CSClearAreaHist(uint gi : SV_GroupIndex)
+{
+    _AreaHist[gi] = 0u;
+    if (gi == 0u)
+    {
+        _StatsBuf[0] = 0x7F7FFFFFu;
+        _StatsBuf[1] = 0u;
+        _StatsBuf[2] = 0u;
+    }
+}
+
+[numthreads(16, 16, 1)]
+void CSAreaHist(uint3 dtid : SV_DispatchThreadID, uint gi : SV_GroupIndex)
+{
+    if (gi < 64u)
+    {
+        gsHist[gi] = 0u;
+    }
+    GroupMemoryBarrierWithGroupSync();
+
+    if (dtid.x < (uint)_Width && dtid.y < (uint)_Height)
+    {
+        uint idx = dtid.y * (uint)_Width + dtid.x;
+        uint area = _AreaBuffer[_ParentBuffer[idx]];
+        float logA = log2((float)max(1u, area));
+        uint bin = min(63u, (uint)floor(logA * (63.0 / 24.0)));
+        InterlockedAdd(gsHist[bin], 1u);
+    }
+
+    GroupMemoryBarrierWithGroupSync();
+
+    if (gi < 64u)
+    {
+        InterlockedAdd(_AreaHist[gi], gsHist[gi]);
+    }
+}
+
+[numthreads(64, 1, 1)]
+void CSAreaFindMedian(uint gi : SV_GroupIndex)
+{
+    gsHist[gi] = _AreaHist[gi];
+    GroupMemoryBarrierWithGroupSync();
+
+    if (gi == 0u)
+    {
+        uint total = (uint)max(1, _Width * _Height);
+        uint target = total / 2u;
+        uint running = 0u;
+        float medArea = 1.0;
+
+        for (uint b = 0u; b < 64u; b++)
+        {
+            uint prev = running;
+            running += gsHist[b];
+            if (running >= target)
+            {
+                uint span = max(1u, gsHist[b]);
+                float frac = (float)(target - prev) / (float)span;
+                float binPos = (float)b + frac;
+                medArea = exp2(binPos * (24.0 / 63.0));
+                break;
+            }
+        }
+
+        float rawThreshold = medArea * (_EdgeSimplicity * 0.01);
+        float smoothedThreshold = (_ResetAreaHistory > 0)
+            ? rawThreshold
+            : lerp(_TemporalState[0].z, rawThreshold, _TemporalAlpha);
+
+        _TemporalState[0].z = smoothedThreshold;
+        _StatsBuf[2] = asuint(smoothedThreshold);
+    }
+}
+
+[numthreads(16, 16, 1)]
+void CSBuildHoleSeeds(uint3 dtid : SV_DispatchThreadID)
+{
+    if (dtid.x >= (uint)_Width || dtid.y >= (uint)_Height)
+        return;
+
+    uint idx = dtid.y * (uint)_Width + dtid.x;
+    uint area = _AreaBuffer[_ParentBuffer[idx]];
+    float threshold = asfloat(_StatsBuf[2]);
+
+    if ((float)area <= threshold)
+    {
+        _JfaOutTex[dtid.xy] = float4(0.0, 0.0, 0.0, 0.0);
+    }
+    else
+    {
+        float2 uv = (float2(dtid.xy) + 0.5) / float2((float)_Width, (float)_Height);
+        _JfaOutTex[dtid.xy] = float4(uv.x, uv.y, 0.0, 1.0);
+    }
+}
+
+[numthreads(16, 16, 1)]
+void CSReduceMinMax(uint3 dtid : SV_DispatchThreadID, uint gi : SV_GroupIndex)
+{
+    if (dtid.x < (uint)_Width && dtid.y < (uint)_Height)
+    {
+        float3 rgb = clamp(_InputTex[dtid.xy].rgb, 0.0, 1e6);
+        float cMin = min(rgb.r, min(rgb.g, rgb.b));
+        float cMax = max(rgb.r, max(rgb.g, rgb.b));
+        gsMin[gi] = asuint(cMin);
+        gsMax[gi] = asuint(cMax);
+    }
+    else
+    {
+        gsMin[gi] = 0x7F7FFFFFu;
+        gsMax[gi] = 0u;
+    }
+
+    GroupMemoryBarrierWithGroupSync();
+
+    [unroll]
+    for (uint stride = 128u; stride > 0u; stride >>= 1u)
+    {
+        if (gi < stride)
+        {
+            gsMin[gi] = min(gsMin[gi], gsMin[gi + stride]);
+            gsMax[gi] = max(gsMax[gi], gsMax[gi + stride]);
+        }
+        GroupMemoryBarrierWithGroupSync();
+    }
+
+    if (gi == 0u)
+    {
+        InterlockedMin(_StatsBuf[0], gsMin[0]);
+        InterlockedMax(_StatsBuf[1], gsMax[0]);
+    }
+}
+
+[numthreads(1, 1, 1)]
+void CSSmoothMinMax()
+{
+    float rawMin = asfloat(_StatsBuf[0]);
+    float rawMax = asfloat(_StatsBuf[1]);
+
+    if (_ResetMinMaxHistory > 0)
+    {
+        _TemporalState[0].xy = float2(rawMin, rawMax);
+    }
+    else
+    {
+        float2 smoothed = lerp(_TemporalState[0].xy, float2(rawMin, rawMax), _TemporalAlpha);
+        _TemporalState[0].xy = smoothed;
+        _StatsBuf[0] = asuint(smoothed.x);
+        _StatsBuf[1] = asuint(smoothed.y);
+    }
+}

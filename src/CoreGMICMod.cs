@@ -64,6 +64,7 @@ namespace CoreGMIC
             FilterManager.Register(new BarbouillagePaintDaubFilter());
             FilterManager.Register(new ChalkItUpFilter());
             FilterManager.Register(new CubismFilter());
+            FilterManager.Register(new CutoutFilter());
         }
 
         private void OnGameCamerasSceneInit(On.GameCameras.orig_SceneInit orig, GameCameras self)
