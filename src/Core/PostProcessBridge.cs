@@ -62,7 +62,7 @@ namespace CoreGMIC.Core
             _overlayRenderers.Clear();
 
             IFilter activeFilter = FilterManager.ActiveFilter;
-            if (!FilterManager.IsEnabled || activeFilter == null || !activeFilter.IsAvailable || !EntityExclusionManager.HasAnyExclusion)
+            if (ShouldBypassFilters() || !FilterManager.IsEnabled || activeFilter == null || !activeFilter.IsAvailable || !EntityExclusionManager.HasAnyExclusion)
             {
                 return;
             }
@@ -83,7 +83,7 @@ namespace CoreGMIC.Core
         {
             IFilter activeFilter = FilterManager.ActiveFilter;
 
-            if (!FilterManager.IsEnabled || activeFilter == null || !activeFilter.IsAvailable)
+            if (ShouldBypassFilters() || !FilterManager.IsEnabled || activeFilter == null || !activeFilter.IsAvailable)
             {
                 Graphics.Blit(source, destination);
                 return;
@@ -109,6 +109,12 @@ namespace CoreGMIC.Core
         private void OnPostRender()
         {
             RestoreHiddenRenderers();
+        }
+
+        private static bool ShouldBypassFilters()
+        {
+            GameManager gm = GameManager.UnsafeInstance;
+            return gm != null && gm.gameState == GlobalEnums.GameState.MAIN_MENU;
         }
 
         private void CreateOverlayCamera()
