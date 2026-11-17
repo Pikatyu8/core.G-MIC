@@ -1,6 +1,8 @@
 using System;
 using System.Collections.Generic;
 using CoreGMIC.Core;
+using Modding.Menu;
+using Modding.Menu.Config;
 using Satchel.BetterMenus;
 using UnityEngine;
 using UnityEngine.UI;
@@ -16,6 +18,8 @@ namespace CoreGMIC.UI
         private const string HeavyWarningBannerText = "<color=#FF3B30>GPU HEAVY SHADERS PAST THIS POINT</color>";
 
         private static Menu _menuRef;
+        private static UnityEngine.UI.MenuButton _disablePlayerButton;
+        private static UnityEngine.UI.MenuButton _disableTiktikButton;
         private static bool _isUpdatingUi;
         private static readonly List<IFilter> _filterSlots = new List<IFilter>();
         private static int _selectedOptionIndex;
@@ -165,7 +169,9 @@ namespace CoreGMIC.UI
                 }
 
                 _menuRef = new Menu("core.G'MIC", elements.ToArray());
-                return _menuRef.GetMenuScreen(modListMenu);
+                MenuScreen screen = _menuRef.GetMenuScreen(modListMenu);
+                AddCornerExclusionButtons(screen);
+                return screen;
             }
             finally
             {
@@ -185,12 +191,119 @@ namespace CoreGMIC.UI
             {
                 SyncSelectedOptionIndex();
                 ApplyParameterVisibilityFlags();
+                UpdateCornerExclusionLabels();
                 _menuRef.Update();
             }
             finally
             {
                 _isUpdatingUi = false;
             }
+        }
+
+        private static void AddCornerExclusionButtons(MenuScreen screen)
+        {
+            if (screen == null || screen.title == null)
+            {
+                return;
+            }
+
+            GameObject titleGo = screen.title.gameObject;
+
+            ContentArea playerArea = new ContentArea(
+                titleGo,
+                new SingleContentLayout(new AnchoredPosition(
+                    new Vector2(0.5f, 0.5f),
+                    new Vector2(0.5f, 0.5f),
+                    new Vector2(780f, 18f))));
+
+            playerArea.AddMenuButton(
+                "DisablePlayerButton",
+                new MenuButtonConfig
+                {
+                    Label = GetDisablePlayerLabel(),
+                    CancelAction = _ => _menuRef?.CancelAction?.Invoke(),
+                    SubmitAction = _ =>
+                    {
+                        EntityExclusionManager.DisablePlayer = !EntityExclusionManager.DisablePlayer;
+                        UpdateCornerExclusionLabels();
+                    },
+                    Style = MenuButtonStyle.VanillaStyle,
+                    Proceed = false
+                },
+                out _disablePlayerButton);
+
+            ConfigureCornerButton(_disablePlayerButton);
+
+            ContentArea tiktikArea = new ContentArea(
+                titleGo,
+                new SingleContentLayout(new AnchoredPosition(
+                    new Vector2(0.5f, 0.5f),
+                    new Vector2(0.5f, 0.5f),
+                    new Vector2(780f, -42f))));
+
+            tiktikArea.AddMenuButton(
+                "DisableTiktikButton",
+                new MenuButtonConfig
+                {
+                    Label = GetDisableTiktikLabel(),
+                    CancelAction = _ => _menuRef?.CancelAction?.Invoke(),
+                    SubmitAction = _ =>
+                    {
+                        EntityExclusionManager.DisableTiktik = !EntityExclusionManager.DisableTiktik;
+                        UpdateCornerExclusionLabels();
+                    },
+                    Style = MenuButtonStyle.VanillaStyle,
+                    Proceed = false
+                },
+                out _disableTiktikButton);
+
+            ConfigureCornerButton(_disableTiktikButton);
+        }
+
+        private static void ConfigureCornerButton(UnityEngine.UI.MenuButton button)
+        {
+            if (button == null)
+            {
+                return;
+            }
+
+            Text label = button.GetComponentInChildren<Text>(true);
+            if (label != null)
+            {
+                label.fontSize = 26;
+                label.alignment = TextAnchor.MiddleRight;
+            }
+        }
+
+        private static void UpdateCornerExclusionLabels()
+        {
+            if (_disablePlayerButton != null)
+            {
+                Text label = _disablePlayerButton.GetComponentInChildren<Text>(true);
+                if (label != null)
+                {
+                    label.text = GetDisablePlayerLabel();
+                }
+            }
+
+            if (_disableTiktikButton != null)
+            {
+                Text label = _disableTiktikButton.GetComponentInChildren<Text>(true);
+                if (label != null)
+                {
+                    label.text = GetDisableTiktikLabel();
+                }
+            }
+        }
+
+        private static string GetDisablePlayerLabel()
+        {
+            return EntityExclusionManager.DisablePlayer ? "Disable Player: On" : "Disable Player: Off";
+        }
+
+        private static string GetDisableTiktikLabel()
+        {
+            return EntityExclusionManager.DisableTiktik ? "Disable Tiktik: On" : "Disable Tiktik: Off";
         }
 
         private static bool IsDummyWarningSelected()

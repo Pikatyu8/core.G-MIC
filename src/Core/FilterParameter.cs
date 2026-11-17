@@ -20,6 +20,7 @@ namespace CoreGMIC.Core
         public float MinValue { get; }
         public float MaxValue { get; }
         public float DefaultValue { get; }
+        public float Step { get; }
         public string[] Choices { get; }
         public Func<bool> IsVisible { get; }
 
@@ -55,7 +56,8 @@ namespace CoreGMIC.Core
             float defaultValue,
             Action<float> onChanged = null,
             string[] choices = null,
-            Func<bool> isVisible = null)
+            Func<bool> isVisible = null,
+            float step = 0f)
         {
             Key = key;
             DisplayName = displayName;
@@ -63,6 +65,7 @@ namespace CoreGMIC.Core
             Kind = kind;
             MinValue = minValue;
             MaxValue = maxValue;
+            Step = step;
             DefaultValue = Normalize(defaultValue);
             Choices = choices;
             IsVisible = isVisible;
@@ -83,21 +86,29 @@ namespace CoreGMIC.Core
         private float Normalize(float raw)
         {
             float clamped = Mathf.Clamp(raw, MinValue, MaxValue);
-            return Kind switch
+            switch (Kind)
             {
-                FilterParamKind.Int => Mathf.Round(clamped),
-                FilterParamKind.Choice => Mathf.Round(clamped),
-                FilterParamKind.Bool => clamped >= 0.5f ? 1f : 0f,
-                _ => clamped
-            };
+                case FilterParamKind.Int:
+                case FilterParamKind.Choice:
+                    return Mathf.Round(clamped);
+                case FilterParamKind.Bool:
+                    return clamped >= 0.5f ? 1f : 0f;
+                default:
+                    if (Step > 0f)
+                    {
+                        float stepped = MinValue + Mathf.Round((clamped - MinValue) / Step) * Step;
+                        return Mathf.Clamp((float)Math.Round(stepped, 4), MinValue, MaxValue);
+                    }
+                    return clamped;
+            }
         }
 
         public static FilterParameter Float(
             string key, string displayName, string description,
             float min, float max, float defaultValue,
-            Action<float> onChanged = null, Func<bool> isVisible = null)
+            Action<float> onChanged = null, Func<bool> isVisible = null, float step = 0f)
         {
-            return new FilterParameter(key, displayName, description, FilterParamKind.Float, min, max, defaultValue, onChanged, null, isVisible);
+            return new FilterParameter(key, displayName, description, FilterParamKind.Float, min, max, defaultValue, onChanged, null, isVisible, step);
         }
 
         public static FilterParameter Int(

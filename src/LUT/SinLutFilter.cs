@@ -6,30 +6,88 @@ namespace CoreGMIC.LUT
 {
     public class SinLutFilter : IFilter
     {
+        private const int LutSize = 64;
+
         private Material _material;
         private Texture2D _lutTexture;
-        private int _oscillations = 81;
+
+        private int _mode = 0; // 0: |sin|, 1: |tan|, 2: |sec| - 1
+        private float _sinOscillations = 5.0f;
+        private float _tanOscillations = 2.0f;
+        private float _secOscillations = 1.5f;
+        private bool _forceWhite = false;
         private float _intensity = 1f;
 
         private readonly List<FilterParameter> _parameters = new List<FilterParameter>();
 
         public string Id => "test_sin_lut";
-        public string DisplayName => "|sin(RGB)| LUT";
-        public string Description => "Test LUT filter computing |sin(channel * N * PI)|.";
+        public string DisplayName => "Trigonometry LUT";
+        public string Description => "Color LUT computing |sin|, |tan|, or |sec|-1 oscillations per channel.";
         public FilterCategory Category => FilterCategory.Lut;
         public bool IsAvailable => _material != null && _lutTexture != null;
         public IReadOnlyList<FilterParameter> Parameters => _parameters;
 
         public SinLutFilter()
         {
-            _parameters.Add(FilterParameter.Int(
-                "oscillations",
-                "Oscillations (xPI)",
-                "Number of |sin| half-wave oscillations across [0, 1] (multiplied by PI).",
-                1, 85, 81,
+            _parameters.Add(FilterParameter.Choice(
+                "trig_mode",
+                "Function",
+                "Trigonometric mapping function applied per RGB channel.",
+                new[] { "|sin|", "|tan|", "|sec| - 1" },
+                0,
                 val =>
                 {
-                    _oscillations = val;
+                    _mode = val;
+                    RebuildLut();
+                }));
+
+            _parameters.Add(FilterParameter.Float(
+                "sin_osc",
+                "Sine Osc (xPI)",
+                "Half-wave oscillation count for |sin(c * N * PI)|.",
+                0.5f, 30f, 5.0f,
+                val =>
+                {
+                    _sinOscillations = val;
+                    RebuildLut();
+                },
+                isVisible: () => _mode == 0,
+                step: 0.1f));
+
+            _parameters.Add(FilterParameter.Float(
+                "tan_osc",
+                "Tan Osc (xPI)",
+                "Period frequency for clamped |tan(c * N * PI)|.",
+                0.2f, 12f, 2.0f,
+                val =>
+                {
+                    _tanOscillations = val;
+                    RebuildLut();
+                },
+                isVisible: () => _mode == 1,
+                step: 0.1f));
+
+            _parameters.Add(FilterParameter.Float(
+                "sec_osc",
+                "Sec Osc (xPI)",
+                "Period frequency for clamped |sec(c * N * PI)| - 1.",
+                0.2f, 10f, 1.5f,
+                val =>
+                {
+                    _secOscillations = val;
+                    RebuildLut();
+                },
+                isVisible: () => _mode == 2,
+                step: 0.1f));
+
+            _parameters.Add(FilterParameter.Bool(
+                "force_white",
+                "Force White -> White",
+                "Smoothly preserve pure white highlights instead of wrapping them to black.",
+                false,
+                val =>
+                {
+                    _forceWhite = val;
                     RebuildLut();
                 }));
 
@@ -45,7 +103,8 @@ namespace CoreGMIC.LUT
                     {
                         _material.SetFloat("_Intensity", _intensity);
                     }
-                }));
+                },
+                step: 0.02f));
         }
 
         public void Initialize()
@@ -56,11 +115,11 @@ namespace CoreGMIC.LUT
                 return;
             }
 
-            _lutTexture = LutTextureGenerator.GenerateStrip((r, g, b) => EvaluateColor(r, g, b, _oscillations));
+            _lutTexture = LutTextureGenerator.GenerateStrip(EvaluateCurrent, LutSize);
 
             _material = new Material(shader);
             _material.SetTexture("_LutTex", _lutTexture);
-            _material.SetFloat("_LutSize", LutTextureGenerator.DefaultSize);
+            _material.SetFloat("_LutSize", LutSize);
             _material.SetFloat("_Intensity", _intensity);
         }
 
@@ -99,17 +158,53 @@ namespace CoreGMIC.LUT
                 return;
             }
 
-            int oscillations = _oscillations;
-            LutTextureGenerator.FillStrip(_lutTexture, (r, g, b) => EvaluateColor(r, g, b, oscillations));
+            LutTextureGenerator.FillStrip(_lutTexture, EvaluateCurrent, LutSize);
         }
 
-        private static Color EvaluateColor(float r, float g, float b, int oscillations)
+        private Color EvaluateCurrent(float r, float g, float b)
         {
-            float freq = oscillations * Mathf.PI;
-            float nr = Mathf.Abs(Mathf.Sin(r * freq));
-            float ng = Mathf.Abs(Mathf.Sin(g * freq));
-            float nb = Mathf.Abs(Mathf.Sin(b * freq));
-            return new Color(nr, ng, nb, 1f);
+            return new Color(
+                EvaluateChannel(r),
+                EvaluateChannel(g),
+                EvaluateChannel(b),
+                1f);
+        }
+
+        private float EvaluateChannel(float c)
+        {
+            float val;
+            switch (_mode)
+            {
+                case 1:
+                {
+                    float x = c * _tanOscillations * Mathf.PI;
+                    float cos = Mathf.Abs(Mathf.Cos(x));
+                    val = (cos < 1e-4f) ? 1f : Mathf.Clamp01(Mathf.Abs(Mathf.Sin(x)) / cos);
+                    break;
+                }
+                case 2:
+                {
+                    float x = c * _secOscillations * Mathf.PI;
+                    float cos = Mathf.Abs(Mathf.Cos(x));
+                    val = (cos < 1e-4f) ? 1f : Mathf.Clamp01((1f / cos) - 1f);
+                    break;
+                }
+                default:
+                {
+                    float x = c * _sinOscillations * Mathf.PI;
+                    val = Mathf.Clamp01(Mathf.Abs(Mathf.Sin(x)));
+                    break;
+                }
+            }
+
+            if (_forceWhite && c > 0.85f)
+            {
+                float t = Mathf.InverseLerp(0.85f, 1.0f, c);
+                float smooth = t * t * (3f - 2f * t);
+                val = Mathf.Lerp(val, 1f, smooth);
+            }
+
+            return val;
         }
     }
 }

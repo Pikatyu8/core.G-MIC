@@ -34,6 +34,7 @@ namespace CoreGMIC
             FilterManager.InitializeAll();
             FilterManager.IsEnabled = Settings.Enabled;
             FilterManager.SetActiveById(Settings.SelectedFilterId);
+            EntityExclusionManager.Initialize(Settings);
 
             On.GameCameras.SceneInit += OnGameCamerasSceneInit;
             AttachBridgeToMainCamera();
@@ -67,6 +68,7 @@ namespace CoreGMIC
         private void OnGameCamerasSceneInit(On.GameCameras.orig_SceneInit orig, GameCameras self)
         {
             orig(self);
+            EntityExclusionManager.RefreshAll();
             AttachBridgeToMainCamera(self);
         }
 

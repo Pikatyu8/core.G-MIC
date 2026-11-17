@@ -1,14 +1,83 @@
 using System;
+using System.Collections.Generic;
 using UnityEngine;
 
 namespace CoreGMIC.Core
 {
     /// <summary>
-    /// Attached to GameCameras.instance.mainCamera to intercept rendered frames via OnRenderImage.
+    /// Attached to GameCameras.instance.mainCamera to intercept rendered frames via OnRenderImage
+    /// and re-render excluded entities cleanly on an overlay camera between mainCamera and hudCamera.
     /// </summary>
     public class PostProcessBridge : MonoBehaviour
     {
+        private const int ExclusionLayer = 31; // Unused in GlobalEnums.PhysLayers (max is 30).
+
+        private Camera _camera;
+        private Camera _overlayCamera;
+        private OverlayCameraHook _overlayHook;
         private string _lastFailedFilterId;
+
+        private readonly List<Renderer> _hiddenThisFrame = new List<Renderer>();
+        private readonly List<Renderer> _overlayRenderers = new List<Renderer>();
+
+        private void Awake()
+        {
+            _camera = GetComponent<Camera>();
+            CreateOverlayCamera();
+        }
+
+        private void OnEnable()
+        {
+            if (_overlayCamera != null)
+            {
+                _overlayCamera.enabled = true;
+            }
+        }
+
+        private void OnDisable()
+        {
+            RestoreHiddenRenderers();
+            _overlayRenderers.Clear();
+            if (_overlayCamera != null)
+            {
+                _overlayCamera.enabled = false;
+            }
+        }
+
+        private void OnDestroy()
+        {
+            RestoreHiddenRenderers();
+            _overlayRenderers.Clear();
+            if (_overlayCamera != null)
+            {
+                Destroy(_overlayCamera.gameObject);
+                _overlayCamera = null;
+                _overlayHook = null;
+            }
+        }
+
+        private void OnPreCull()
+        {
+            RestoreHiddenRenderers();
+            _overlayRenderers.Clear();
+
+            IFilter activeFilter = FilterManager.ActiveFilter;
+            if (!FilterManager.IsEnabled || activeFilter == null || !activeFilter.IsAvailable || !EntityExclusionManager.HasAnyExclusion)
+            {
+                return;
+            }
+
+            EntityExclusionManager.CollectActiveExcludedRenderers(_hiddenThisFrame);
+            for (int i = 0; i < _hiddenThisFrame.Count; i++)
+            {
+                Renderer r = _hiddenThisFrame[i];
+                if (r != null)
+                {
+                    r.forceRenderingOff = true;
+                    _overlayRenderers.Add(r);
+                }
+            }
+        }
 
         private void OnRenderImage(RenderTexture source, RenderTexture destination)
         {
@@ -33,8 +102,157 @@ namespace CoreGMIC.Core
                     CoreGMICMod.Instance?.LogError($"Error applying filter '{activeFilter.Id}': {ex}");
                 }
 
-                // Fallback to passthrough so the screen never turns black.
                 Graphics.Blit(source, destination);
+            }
+        }
+
+        private void OnPostRender()
+        {
+            RestoreHiddenRenderers();
+        }
+
+        private void CreateOverlayCamera()
+        {
+            if (_overlayCamera != null)
+            {
+                return;
+            }
+
+            GameObject camGo = new GameObject("CoreGMIC_ExclusionOverlayCamera")
+            {
+                hideFlags = HideFlags.HideAndDontSave
+            };
+            camGo.transform.SetParent(transform, false);
+
+            _overlayCamera = camGo.AddComponent<Camera>();
+            _overlayCamera.clearFlags = CameraClearFlags.Nothing;
+            _overlayCamera.cullingMask = 1 << ExclusionLayer;
+            _overlayCamera.depthTextureMode = DepthTextureMode.None;
+            _overlayCamera.enabled = enabled;
+
+            _overlayHook = camGo.AddComponent<OverlayCameraHook>();
+            _overlayHook.Init(_camera, _overlayCamera, _overlayRenderers);
+        }
+
+        private void RestoreHiddenRenderers()
+        {
+            for (int i = 0; i < _hiddenThisFrame.Count; i++)
+            {
+                Renderer r = _hiddenThisFrame[i];
+                if (r != null)
+                {
+                    r.forceRenderingOff = false;
+                }
+            }
+
+            _hiddenThisFrame.Clear();
+        }
+
+        private sealed class OverlayCameraHook : MonoBehaviour
+        {
+            private readonly struct SavedLayer
+            {
+                public readonly GameObject GameObject;
+                public readonly int Layer;
+
+                public SavedLayer(GameObject gameObject, int layer)
+                {
+                    GameObject = gameObject;
+                    Layer = layer;
+                }
+            }
+
+            private Camera _mainCam;
+            private Camera _overlayCam;
+            private List<Renderer> _renderers;
+            private readonly List<SavedLayer> _savedLayers = new List<SavedLayer>();
+            private readonly HashSet<GameObject> _seenObjects = new HashSet<GameObject>();
+
+            public void Init(Camera mainCam, Camera overlayCam, List<Renderer> renderers)
+            {
+                _mainCam = mainCam;
+                _overlayCam = overlayCam;
+                _renderers = renderers;
+            }
+
+            private void OnDisable()
+            {
+                RestoreLayers();
+            }
+
+            private void OnDestroy()
+            {
+                RestoreLayers();
+            }
+
+            private void OnPreCull()
+            {
+                RestoreLayers();
+
+                if (_mainCam == null || _overlayCam == null || _renderers == null || _renderers.Count == 0)
+                {
+                    if (_overlayCam != null)
+                    {
+                        _overlayCam.cullingMask = 0;
+                    }
+                    return;
+                }
+
+                Camera hudCam = GameCameras.instance != null ? GameCameras.instance.hudCamera : null;
+                float targetDepth = (hudCam != null && hudCam.depth > _mainCam.depth)
+                    ? 0.5f * (_mainCam.depth + hudCam.depth)
+                    : (_mainCam.depth + 0.5f);
+
+                _overlayCam.CopyFrom(_mainCam);
+                _overlayCam.projectionMatrix = _mainCam.projectionMatrix;
+                _overlayCam.clearFlags = CameraClearFlags.Nothing;
+                _overlayCam.cullingMask = 1 << ExclusionLayer;
+                _overlayCam.depthTextureMode = DepthTextureMode.None;
+                _overlayCam.depth = targetDepth;
+                _overlayCam.enabled = true;
+
+                for (int i = 0; i < _renderers.Count; i++)
+                {
+                    Renderer r = _renderers[i];
+                    if (r == null)
+                    {
+                        continue;
+                    }
+
+                    r.forceRenderingOff = false;
+                    if (!r.enabled || !r.gameObject.activeInHierarchy)
+                    {
+                        continue;
+                    }
+
+                    GameObject go = r.gameObject;
+                    if (_seenObjects.Add(go))
+                    {
+                        _savedLayers.Add(new SavedLayer(go, go.layer));
+                        go.layer = ExclusionLayer;
+                    }
+                }
+            }
+
+            private void OnPostRender()
+            {
+                RestoreLayers();
+                _renderers?.Clear();
+            }
+
+            private void RestoreLayers()
+            {
+                for (int i = 0; i < _savedLayers.Count; i++)
+                {
+                    SavedLayer entry = _savedLayers[i];
+                    if (entry.GameObject != null)
+                    {
+                        entry.GameObject.layer = entry.Layer;
+                    }
+                }
+
+                _savedLayers.Clear();
+                _seenObjects.Clear();
             }
         }
     }
