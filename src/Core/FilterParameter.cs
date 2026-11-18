@@ -76,6 +76,7 @@ namespace CoreGMIC.Core
         public void Reset()
         {
             Value = DefaultValue;
+            ForceApply();
         }
 
         public void ForceApply()

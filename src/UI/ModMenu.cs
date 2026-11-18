@@ -31,91 +31,7 @@ namespace CoreGMIC.UI
             _isUpdatingUi = true;
             try
             {
-                _filterSlots.Clear();
-                List<string> filterNames = new List<string>();
-
-                // Slot 0: No active filter.
-                _filterSlots.Add(null);
-                filterNames.Add("None");
-
-                // Light / LUT / Standard filters first.
-                foreach (IFilter filter in FilterManager.Filters)
-                {
-                    if (filter.Category == FilterCategory.Heavy || filter.Category == FilterCategory.Experimental)
-                    {
-                        continue;
-                    }
-
-                    _filterSlots.Add(filter);
-                    string availability = filter.IsAvailable ? "" : " [N/A]";
-                    filterNames.Add($"{filter.DisplayName}{availability}");
-                }
-
-                // Dummy warning entry before GPU-heavy filters.
-                _dummyWarningIndex = -1;
-                bool hasHeavyFilters = false;
-                foreach (IFilter filter in FilterManager.Filters)
-                {
-                    if (filter.Category == FilterCategory.Heavy)
-                    {
-                        hasHeavyFilters = true;
-                        break;
-                    }
-                }
-
-                if (hasHeavyFilters)
-                {
-                    _dummyWarningIndex = _filterSlots.Count;
-                    _filterSlots.Add(null);
-                    filterNames.Add(HeavyWarningOptionLabel);
-
-                    foreach (IFilter filter in FilterManager.Filters)
-                    {
-                        if (filter.Category != FilterCategory.Heavy)
-                        {
-                            continue;
-                        }
-
-                        _filterSlots.Add(filter);
-                        string availability = filter.IsAvailable ? "" : " [N/A]";
-                        filterNames.Add($"{filter.DisplayName}{availability}");
-                    }
-                }
-
-                // Experimental filters (only shown when enabled via side toggle).
-                _dummyExperimentalIndex = -1;
-                if (FilterManager.EnableExperimentalShaders)
-                {
-                    bool hasExperimentalFilters = false;
-                    foreach (IFilter filter in FilterManager.Filters)
-                    {
-                        if (filter.Category == FilterCategory.Experimental)
-                        {
-                            hasExperimentalFilters = true;
-                            break;
-                        }
-                    }
-
-                    if (hasExperimentalFilters)
-                    {
-                        _dummyExperimentalIndex = _filterSlots.Count;
-                        _filterSlots.Add(null);
-                        filterNames.Add(ExperimentalWarningOptionLabel);
-
-                        foreach (IFilter filter in FilterManager.Filters)
-                        {
-                            if (filter.Category != FilterCategory.Experimental)
-                            {
-                                continue;
-                            }
-
-                            _filterSlots.Add(filter);
-                            string availability = filter.IsAvailable ? "" : " [N/A]";
-                            filterNames.Add($"{filter.DisplayName}{availability}");
-                        }
-                    }
-                }
-
+                List<string> filterNames = RebuildFilterSlots();
                 SyncSelectedOptionIndex();
 
                 List<Element> elements = new List<Element>
@@ -252,7 +168,16 @@ namespace CoreGMIC.UI
             _isUpdatingUi = true;
             try
             {
-                SyncSelectedOptionIndex();
+                bool wasHeavyBanner = IsDummyWarningSelected();
+                bool wasExperimentalBanner = IsDummyExperimentalSelected();
+
+                List<string> filterNames = RebuildFilterSlots();
+                if (_menuRef.Find("active_filter") is HorizontalOption activeFilterOption)
+                {
+                    activeFilterOption.Values = filterNames.ToArray();
+                }
+
+                SyncSelectedOptionIndex(wasHeavyBanner, wasExperimentalBanner);
                 ApplyParameterVisibilityFlags();
                 _sidePanel?.Refresh();
                 _menuRef.Update();
@@ -261,6 +186,96 @@ namespace CoreGMIC.UI
             {
                 _isUpdatingUi = false;
             }
+        }
+
+        private static List<string> RebuildFilterSlots()
+        {
+            _filterSlots.Clear();
+            List<string> filterNames = new List<string>();
+
+            // Slot 0: No active filter.
+            _filterSlots.Add(null);
+            filterNames.Add("None");
+
+            // Light / LUT / Standard filters first.
+            foreach (IFilter filter in FilterManager.Filters)
+            {
+                if (filter.Category == FilterCategory.Heavy || filter.Category == FilterCategory.Experimental)
+                {
+                    continue;
+                }
+
+                _filterSlots.Add(filter);
+                string availability = filter.IsAvailable ? "" : " [N/A]";
+                filterNames.Add($"{filter.DisplayName}{availability}");
+            }
+
+            // Dummy warning entry before GPU-heavy filters.
+            _dummyWarningIndex = -1;
+            bool hasHeavyFilters = false;
+            foreach (IFilter filter in FilterManager.Filters)
+            {
+                if (filter.Category == FilterCategory.Heavy)
+                {
+                    hasHeavyFilters = true;
+                    break;
+                }
+            }
+
+            if (hasHeavyFilters)
+            {
+                _dummyWarningIndex = _filterSlots.Count;
+                _filterSlots.Add(null);
+                filterNames.Add(HeavyWarningOptionLabel);
+
+                foreach (IFilter filter in FilterManager.Filters)
+                {
+                    if (filter.Category != FilterCategory.Heavy)
+                    {
+                        continue;
+                    }
+
+                    _filterSlots.Add(filter);
+                    string availability = filter.IsAvailable ? "" : " [N/A]";
+                    filterNames.Add($"{filter.DisplayName}{availability}");
+                }
+            }
+
+            // Experimental filters (only shown when enabled via side toggle).
+            _dummyExperimentalIndex = -1;
+            if (FilterManager.EnableExperimentalShaders)
+            {
+                bool hasExperimentalFilters = false;
+                foreach (IFilter filter in FilterManager.Filters)
+                {
+                    if (filter.Category == FilterCategory.Experimental)
+                    {
+                        hasExperimentalFilters = true;
+                        break;
+                    }
+                }
+
+                if (hasExperimentalFilters)
+                {
+                    _dummyExperimentalIndex = _filterSlots.Count;
+                    _filterSlots.Add(null);
+                    filterNames.Add(ExperimentalWarningOptionLabel);
+
+                    foreach (IFilter filter in FilterManager.Filters)
+                    {
+                        if (filter.Category != FilterCategory.Experimental)
+                        {
+                            continue;
+                        }
+
+                        _filterSlots.Add(filter);
+                        string availability = filter.IsAvailable ? "" : " [N/A]";
+                        filterNames.Add($"{filter.DisplayName}{availability}");
+                    }
+                }
+            }
+
+            return filterNames;
         }
 
         private static bool IsDummyWarningSelected()
@@ -273,12 +288,23 @@ namespace CoreGMIC.UI
             return _dummyExperimentalIndex >= 0 && _selectedOptionIndex == _dummyExperimentalIndex;
         }
 
-        private static void SyncSelectedOptionIndex()
+        private static void SyncSelectedOptionIndex(bool preserveHeavyBanner = false, bool preserveExperimentalBanner = false)
         {
             IFilter active = FilterManager.ActiveFilter;
             if (active == null)
             {
-                _selectedOptionIndex = 0;
+                if (preserveHeavyBanner && _dummyWarningIndex >= 0)
+                {
+                    _selectedOptionIndex = _dummyWarningIndex;
+                }
+                else if (preserveExperimentalBanner && _dummyExperimentalIndex >= 0)
+                {
+                    _selectedOptionIndex = _dummyExperimentalIndex;
+                }
+                else
+                {
+                    _selectedOptionIndex = 0;
+                }
                 return;
             }
 
@@ -399,13 +425,7 @@ namespace CoreGMIC.UI
 
         private static void RefreshParameterVisibility()
         {
-            if (_menuRef == null)
-            {
-                return;
-            }
-
-            ApplyParameterVisibilityFlags();
-            _menuRef.Reflow();
+            RefreshFromManager();
         }
 
         private static void ApplyParameterVisibilityFlags()
