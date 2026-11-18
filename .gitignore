@@ -40,7 +40,9 @@ artifacts/
 fsm_dump_*.txt
 bundler.py
 bundler_tree.py
-bundle.txt*
+bundler_modules.py
+bundle.txt
+exported_modules.txt
 
 # OS junk
 .DS_Store
