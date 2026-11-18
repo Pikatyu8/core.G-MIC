@@ -1,0 +1,184 @@
+#pragma kernel CSCCLInit
+#pragma kernel CSCCLMergeBorders
+#pragma kernel CSCCLFlattenAndAccum
+
+Texture2D<float4> _LabelTex;
+Texture2D<float4> _SourceTex;
+
+RWStructuredBuffer<uint> _ParentBuffer;
+RWStructuredBuffer<uint> _ShapeSumBuffer; // 4 uints per pixel: sumR, sumG, sumB, count
+
+int _Width;
+int _Height;
+
+groupshared uint gsColor[256];
+groupshared uint gsParent[256];
+
+uint GsFind(uint x)
+{
+    uint p;
+    InterlockedAdd(gsParent[x], 0u, p);
+    for (int iter = 0; iter < 64; iter++)
+    {
+        if (p == x)
+            break;
+        x = p;
+        InterlockedAdd(gsParent[x], 0u, p);
+    }
+    return x;
+}
+
+void GsUnion(uint a, uint b)
+{
+    uint ra = GsFind(a);
+    uint rb = GsFind(b);
+    for (int iter = 0; iter < 64; iter++)
+    {
+        if (ra == rb)
+            break;
+
+        if (ra < rb)
+        {
+            uint old;
+            InterlockedMin(gsParent[rb], ra, old);
+            if (old == rb)
+                break;
+            rb = GsFind(old);
+        }
+        else
+        {
+            uint old;
+            InterlockedMin(gsParent[ra], rb, old);
+            if (old == ra)
+                break;
+            ra = GsFind(old);
+        }
+    }
+}
+
+uint GlobalFind(uint x)
+{
+    uint p = _ParentBuffer[x];
+    for (int iter = 0; iter < 256; iter++)
+    {
+        if (p == x)
+            break;
+        x = p;
+        p = _ParentBuffer[x];
+    }
+    return x;
+}
+
+void GlobalUnion(uint a, uint b)
+{
+    uint ra = GlobalFind(a);
+    uint rb = GlobalFind(b);
+    for (int iter = 0; iter < 256; iter++)
+    {
+        if (ra == rb)
+            break;
+
+        if (ra < rb)
+        {
+            uint old;
+            InterlockedMin(_ParentBuffer[rb], ra, old);
+            if (old == rb)
+                break;
+            rb = GlobalFind(old);
+        }
+        else
+        {
+            uint old;
+            InterlockedMin(_ParentBuffer[ra], rb, old);
+            if (old == ra)
+                break;
+            ra = GlobalFind(old);
+        }
+    }
+}
+
+[numthreads(16, 16, 1)]
+void CSCCLInit(uint3 dtid : SV_DispatchThreadID, uint3 gtid : SV_GroupThreadID, uint3 gid : SV_GroupID, uint gi : SV_GroupIndex)
+{
+    bool inBounds = (dtid.x < (uint)_Width && dtid.y < (uint)_Height);
+    gsColor[gi] = inBounds
+        ? min(15u, (uint)floor(_LabelTex[dtid.xy].a * 16.0))
+        : 0xFFFFFFFFu;
+    gsParent[gi] = gi;
+    GroupMemoryBarrierWithGroupSync();
+
+    if (inBounds)
+    {
+        uint myCol = gsColor[gi];
+        if (gtid.x > 0u && gsColor[gi - 1u] == myCol)
+            GsUnion(gi, gi - 1u);
+        if (gtid.y > 0u && gsColor[gi - 16u] == myCol)
+            GsUnion(gi, gi - 16u);
+    }
+    GroupMemoryBarrierWithGroupSync();
+
+    if (inBounds)
+    {
+        uint lr = GsFind(gi);
+        uint rx = gid.x * 16u + (lr & 15u);
+        uint ry = gid.y * 16u + (lr >> 4u);
+        uint globalIdx = dtid.y * (uint)_Width + dtid.x;
+        _ParentBuffer[globalIdx] = ry * (uint)_Width + rx;
+
+        uint baseOff = globalIdx * 4u;
+        _ShapeSumBuffer[baseOff + 0u] = 0u;
+        _ShapeSumBuffer[baseOff + 1u] = 0u;
+        _ShapeSumBuffer[baseOff + 2u] = 0u;
+        _ShapeSumBuffer[baseOff + 3u] = 0u;
+    }
+}
+
+[numthreads(16, 16, 1)]
+void CSCCLMergeBorders(uint3 dtid : SV_DispatchThreadID, uint3 gtid : SV_GroupThreadID)
+{
+    if (dtid.x >= (uint)_Width || dtid.y >= (uint)_Height)
+        return;
+
+    if (gtid.x != 0u && gtid.y != 0u)
+        return;
+
+    uint w = (uint)_Width;
+    uint idx = dtid.y * w + dtid.x;
+    uint myCol = min(15u, (uint)floor(_LabelTex[dtid.xy].a * 16.0));
+
+    if (gtid.x == 0u && dtid.x > 0u)
+    {
+        uint2 pL = uint2(dtid.x - 1u, dtid.y);
+        if (min(15u, (uint)floor(_LabelTex[pL].a * 16.0)) == myCol)
+            GlobalUnion(idx, pL.y * w + pL.x);
+    }
+
+    if (gtid.y == 0u && dtid.y > 0u)
+    {
+        uint2 pD = uint2(dtid.x, dtid.y - 1u);
+        if (min(15u, (uint)floor(_LabelTex[pD].a * 16.0)) == myCol)
+            GlobalUnion(idx, pD.y * w + pD.x);
+    }
+}
+
+[numthreads(16, 16, 1)]
+void CSCCLFlattenAndAccum(uint3 dtid : SV_DispatchThreadID)
+{
+    if (dtid.x >= (uint)_Width || dtid.y >= (uint)_Height)
+        return;
+
+    uint idx = dtid.y * (uint)_Width + dtid.x;
+    uint root = GlobalFind(idx);
+    _ParentBuffer[idx] = root;
+
+    float3 rgb = saturate(_SourceTex[dtid.xy].rgb);
+    uint rFix = (uint)(rgb.r * 1024.0 + 0.5);
+    uint gFix = (uint)(rgb.g * 1024.0 + 0.5);
+    uint bFix = (uint)(rgb.b * 1024.0 + 0.5);
+
+    uint baseOff = root * 4u;
+    InterlockedAdd(_ShapeSumBuffer[baseOff + 0u], rFix);
+    InterlockedAdd(_ShapeSumBuffer[baseOff + 1u], gFix);
+    InterlockedAdd(_ShapeSumBuffer[baseOff + 2u], bFix);
+    InterlockedAdd(_ShapeSumBuffer[baseOff + 3u], 1u);
+}

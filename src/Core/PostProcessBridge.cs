@@ -15,6 +15,9 @@ namespace CoreGMIC.Core
         private Camera _camera;
         private Camera _overlayCamera;
         private OverlayCameraHook _overlayHook;
+        private Behaviour _fastNoise;
+        private bool _fastNoiseSuppressed;
+        private bool _savedFastNoiseEnabled;
         private string _lastFailedFilterId;
 
         private readonly List<Renderer> _hiddenThisFrame = new List<Renderer>();
@@ -23,6 +26,7 @@ namespace CoreGMIC.Core
         private void Awake()
         {
             _camera = GetComponent<Camera>();
+            _fastNoise = GetComponent("FastNoise") as Behaviour;
             CreateOverlayCamera();
         }
 
@@ -36,6 +40,7 @@ namespace CoreGMIC.Core
 
         private void OnDisable()
         {
+            RestoreFastNoise();
             RestoreHiddenRenderers();
             _overlayRenderers.Clear();
             if (_overlayCamera != null)
@@ -46,6 +51,7 @@ namespace CoreGMIC.Core
 
         private void OnDestroy()
         {
+            RestoreFastNoise();
             RestoreHiddenRenderers();
             _overlayRenderers.Clear();
             if (_overlayCamera != null)
@@ -62,7 +68,10 @@ namespace CoreGMIC.Core
             _overlayRenderers.Clear();
 
             IFilter activeFilter = FilterManager.ActiveFilter;
-            if (ShouldBypassFilters() || !FilterManager.IsEnabled || activeFilter == null || !activeFilter.IsAvailable || !EntityExclusionManager.HasAnyExclusion)
+            bool filterActive = !ShouldBypassFilters() && FilterManager.IsEnabled && activeFilter != null && activeFilter.IsAvailable;
+            UpdateFastNoiseSuppression(filterActive && activeFilter.Id == "fx_vector_painting");
+
+            if (!filterActive || !EntityExclusionManager.HasAnyExclusion)
             {
                 return;
             }
@@ -115,6 +124,51 @@ namespace CoreGMIC.Core
         {
             GameManager gm = GameManager.UnsafeInstance;
             return gm != null && gm.gameState == GlobalEnums.GameState.MAIN_MENU;
+        }
+
+        private void UpdateFastNoiseSuppression(bool shouldSuppress)
+        {
+            if (_fastNoise == null)
+            {
+                _fastNoise = GetComponent("FastNoise") as Behaviour;
+                if (_fastNoise == null)
+                {
+                    return;
+                }
+            }
+
+            if (shouldSuppress)
+            {
+                if (!_fastNoiseSuppressed)
+                {
+                    _savedFastNoiseEnabled = _fastNoise.enabled;
+                    _fastNoiseSuppressed = true;
+                }
+                else if (_fastNoise.enabled)
+                {
+                    // CameraController.ApplyEffectConfiguration may re-enable FastNoise on scene load.
+                    _savedFastNoiseEnabled = true;
+                }
+
+                if (_fastNoise.enabled)
+                {
+                    _fastNoise.enabled = false;
+                }
+            }
+            else
+            {
+                RestoreFastNoise();
+            }
+        }
+
+        private void RestoreFastNoise()
+        {
+            if (_fastNoiseSuppressed && _fastNoise != null)
+            {
+                _fastNoise.enabled = _savedFastNoiseEnabled;
+            }
+
+            _fastNoiseSuppressed = false;
         }
 
         private void CreateOverlayCamera()

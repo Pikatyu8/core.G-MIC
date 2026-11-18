@@ -7,8 +7,27 @@ namespace CoreGMIC.Core
     {
         private static readonly List<IFilter> _filters = new List<IFilter>();
         private static int _activeIndex = -1;
+        private static bool _enableExperimentalShaders;
 
         public static bool IsEnabled { get; set; } = true;
+
+        public static bool EnableExperimentalShaders
+        {
+            get => _enableExperimentalShaders;
+            set
+            {
+                _enableExperimentalShaders = value;
+                if (CoreGMICMod.Settings != null)
+                {
+                    CoreGMICMod.Settings.EnableExperimentalShaders = value;
+                }
+
+                if (!value && ActiveFilter != null && ActiveFilter.Category == FilterCategory.Experimental)
+                {
+                    SetActiveIndex(-1);
+                }
+            }
+        }
         public static IReadOnlyList<IFilter> Filters => _filters;
         public static IFilter ActiveFilter => (_activeIndex >= 0 && _activeIndex < _filters.Count) ? _filters[_activeIndex] : null;
         public static int ActiveFilterIndex => _activeIndex;
@@ -83,7 +102,8 @@ namespace CoreGMIC.Core
 
         public static void SetActiveIndex(int index)
         {
-            if (index < 0 || index >= _filters.Count)
+            if (index < 0 || index >= _filters.Count ||
+                (!_enableExperimentalShaders && _filters[index].Category == FilterCategory.Experimental))
             {
                 _activeIndex = -1;
                 if (CoreGMICMod.Settings != null)

@@ -33,6 +33,7 @@ namespace CoreGMIC
             RegisterBuiltInFilters();
             FilterManager.InitializeAll();
             FilterManager.IsEnabled = Settings.Enabled;
+            FilterManager.EnableExperimentalShaders = Settings.EnableExperimentalShaders;
             FilterManager.SetActiveById(Settings.SelectedFilterId);
             EntityExclusionManager.Initialize(Settings);
 
@@ -65,6 +66,7 @@ namespace CoreGMIC
             FilterManager.Register(new ChalkItUpFilter());
             FilterManager.Register(new CubismFilter());
             FilterManager.Register(new CutoutFilter());
+            FilterManager.Register(new VectorPaintingFilter());
         }
 
         private void OnGameCamerasSceneInit(On.GameCameras.orig_SceneInit orig, GameCameras self)

@@ -14,16 +14,21 @@ namespace CoreGMIC.UI
     {
         private const string ResetButtonId = "reset_active_filter";
         private const string HeavyWarningPanelId = "heavy_warning_panel";
+        private const string ExperimentalWarningPanelId = "experimental_warning_panel";
         private const string HeavyWarningOptionLabel = "<color=#FF3B30>[!] GPU HEAVY -></color>";
         private const string HeavyWarningBannerText = "<color=#FF3B30>GPU HEAVY SHADERS PAST THIS POINT</color>";
+        private const string ExperimentalWarningOptionLabel = "<color=#FF9500>[!] EXPERIMENTAL -></color>";
+        private const string ExperimentalWarningBannerText = "<color=#FF9500>EXPERIMENTAL SHADERS PAST THIS POINT</color>";
 
         private static Menu _menuRef;
         private static UnityEngine.UI.MenuButton _disablePlayerButton;
         private static UnityEngine.UI.MenuButton _disableTiktikButton;
+        private static UnityEngine.UI.MenuButton _enableExperimentalButton;
         private static bool _isUpdatingUi;
         private static readonly List<IFilter> _filterSlots = new List<IFilter>();
         private static int _selectedOptionIndex;
         private static int _dummyWarningIndex = -1;
+        private static int _dummyExperimentalIndex = -1;
 
         public static MenuScreen GetMenuScreen(MenuScreen modListMenu)
         {
@@ -40,7 +45,7 @@ namespace CoreGMIC.UI
                 // Light / LUT / Standard filters first.
                 foreach (IFilter filter in FilterManager.Filters)
                 {
-                    if (filter.Category == FilterCategory.Heavy)
+                    if (filter.Category == FilterCategory.Heavy || filter.Category == FilterCategory.Experimental)
                     {
                         continue;
                     }
@@ -78,6 +83,40 @@ namespace CoreGMIC.UI
                         _filterSlots.Add(filter);
                         string availability = filter.IsAvailable ? "" : " [N/A]";
                         filterNames.Add($"{filter.DisplayName}{availability}");
+                    }
+                }
+
+                // Experimental filters (only shown when enabled via corner toggle).
+                _dummyExperimentalIndex = -1;
+                if (FilterManager.EnableExperimentalShaders)
+                {
+                    bool hasExperimentalFilters = false;
+                    foreach (IFilter filter in FilterManager.Filters)
+                    {
+                        if (filter.Category == FilterCategory.Experimental)
+                        {
+                            hasExperimentalFilters = true;
+                            break;
+                        }
+                    }
+
+                    if (hasExperimentalFilters)
+                    {
+                        _dummyExperimentalIndex = _filterSlots.Count;
+                        _filterSlots.Add(null);
+                        filterNames.Add(ExperimentalWarningOptionLabel);
+
+                        foreach (IFilter filter in FilterManager.Filters)
+                        {
+                            if (filter.Category != FilterCategory.Experimental)
+                            {
+                                continue;
+                            }
+
+                            _filterSlots.Add(filter);
+                            string availability = filter.IsAvailable ? "" : " [N/A]";
+                            filterNames.Add($"{filter.DisplayName}{availability}");
+                        }
                     }
                 }
 
@@ -127,6 +166,15 @@ namespace CoreGMIC.UI
                     )
                     {
                         isVisible = IsDummyWarningSelected()
+                    },
+                    new TextPanel(
+                        ExperimentalWarningBannerText,
+                        width: 1000f,
+                        fontSize: 30,
+                        Id: ExperimentalWarningPanelId
+                    )
+                    {
+                        isVisible = IsDummyExperimentalSelected()
                     },
                     new MenuButton(
                         "Reset Filter Defaults",
@@ -258,6 +306,31 @@ namespace CoreGMIC.UI
                 out _disableTiktikButton);
 
             ConfigureCornerButton(_disableTiktikButton);
+
+            ContentArea experimentalArea = new ContentArea(
+                titleGo,
+                new SingleContentLayout(new AnchoredPosition(
+                    new Vector2(0.5f, 0.5f),
+                    new Vector2(0.5f, 0.5f),
+                    new Vector2(780f, -102f))));
+
+            experimentalArea.AddMenuButton(
+                "EnableExperimentalButton",
+                new MenuButtonConfig
+                {
+                    Label = GetEnableExperimentalLabel(),
+                    CancelAction = _ => _menuRef?.CancelAction?.Invoke(),
+                    SubmitAction = _ =>
+                    {
+                        FilterManager.EnableExperimentalShaders = !FilterManager.EnableExperimentalShaders;
+                        RefreshFromManager();
+                    },
+                    Style = MenuButtonStyle.VanillaStyle,
+                    Proceed = false
+                },
+                out _enableExperimentalButton);
+
+            ConfigureCornerButton(_enableExperimentalButton);
         }
 
         private static void ConfigureCornerButton(UnityEngine.UI.MenuButton button)
@@ -294,6 +367,15 @@ namespace CoreGMIC.UI
                     label.text = GetDisableTiktikLabel();
                 }
             }
+
+            if (_enableExperimentalButton != null)
+            {
+                Text label = _enableExperimentalButton.GetComponentInChildren<Text>(true);
+                if (label != null)
+                {
+                    label.text = GetEnableExperimentalLabel();
+                }
+            }
         }
 
         private static string GetDisablePlayerLabel()
@@ -306,9 +388,19 @@ namespace CoreGMIC.UI
             return EntityExclusionManager.DisableTiktik ? "Disable Tiktik: On" : "Disable Tiktik: Off";
         }
 
+        private static string GetEnableExperimentalLabel()
+        {
+            return FilterManager.EnableExperimentalShaders ? "Experimental Shaders: On" : "Experimental Shaders: Off";
+        }
+
         private static bool IsDummyWarningSelected()
         {
             return _dummyWarningIndex >= 0 && _selectedOptionIndex == _dummyWarningIndex;
+        }
+
+        private static bool IsDummyExperimentalSelected()
+        {
+            return _dummyExperimentalIndex >= 0 && _selectedOptionIndex == _dummyExperimentalIndex;
         }
 
         private static void SyncSelectedOptionIndex()
@@ -457,6 +549,12 @@ namespace CoreGMIC.UI
             if (warningPanel != null)
             {
                 warningPanel.isVisible = IsDummyWarningSelected();
+            }
+
+            Element experimentalPanel = _menuRef.Find(ExperimentalWarningPanelId);
+            if (experimentalPanel != null)
+            {
+                experimentalPanel.isVisible = IsDummyExperimentalSelected();
             }
 
             Element resetBtn = _menuRef.Find(ResetButtonId);

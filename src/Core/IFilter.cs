@@ -8,7 +8,8 @@ namespace CoreGMIC.Core
         None = 0,
         Lut = 1,
         Standard = 2,
-        Heavy = 3
+        Heavy = 3,
+        Experimental = 4
     }
 
     public interface IFilter
