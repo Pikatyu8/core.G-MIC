@@ -1,15 +1,13 @@
-using System.Collections.Generic;
 using CoreGMIC.Core;
 using UnityEngine;
 
 namespace CoreGMIC.Heavy
 {
-    public class VectorPaintingFilter : IFilter
+    public class VectorPaintingFilter : FilterBase
     {
         private const float MaxSigmaPerPass = 3.3f;
         private const float ReconstructSigma = 2.2f;
 
-        private Material _material;
         private ComputeShader _compute;
 
         private int _kernelCCLInit;
@@ -24,21 +22,19 @@ namespace CoreGMIC.Heavy
         private int _allocH = -1;
         private RenderTextureFormat _allocSourceFormat;
 
-        private readonly List<FilterParameter> _parameters = new List<FilterParameter>();
         private float _details = 9.0f;
         private float _colorThreshold = 0.0f;
         private float _minAlpha = 0.15f;
 
-        public string Id => "fx_vector_painting";
-        public string DisplayName => "Vector Painting";
-        public string Description => "Simulates a vector art style with clean areas of color.";
-        public FilterCategory Category => FilterCategory.Experimental;
-        public bool IsAvailable => _material != null && _compute != null && SystemInfo.supportsComputeShaders;
-        public IReadOnlyList<FilterParameter> Parameters => _parameters;
+        public override string Id => "fx_vector_painting";
+        public override string DisplayName => "Vector Painting";
+        public override string Description => "Simulates a vector art style with clean areas of color.";
+        public override FilterCategory Category => FilterCategory.Experimental;
+        public override bool IsAvailable => base.IsAvailable && _compute != null && SystemInfo.supportsComputeShaders;
 
         public VectorPaintingFilter()
         {
-            _parameters.Add(FilterParameter.Float(
+            AddParameter(FilterParameter.Float(
                 "details",
                 "Details",
                 "Controls vector region granularity (higher = finer shapes).",
@@ -46,7 +42,7 @@ namespace CoreGMIC.Heavy
                 v => _details = v,
                 step: 0.05f));
 
-            _parameters.Add(FilterParameter.Float(
+            AddParameter(FilterParameter.Float(
                 "color_threshold",
                 "Stability Threshold",
                 "Coherent motion threshold separating real motion from frame noise.",
@@ -54,7 +50,7 @@ namespace CoreGMIC.Heavy
                 v => _colorThreshold = v,
                 step: 0.002f));
 
-            _parameters.Add(FilterParameter.Float(
+            AddParameter(FilterParameter.Float(
                 "min_alpha",
                 "Trail Fade Speed",
                 "Convergence speed in static areas (higher = faster trail fade, lower = smoother).",
@@ -63,43 +59,27 @@ namespace CoreGMIC.Heavy
                 step: 0.01f));
         }
 
-        public void Initialize()
+        public override void Initialize()
         {
-            if (!SystemInfo.supportsComputeShaders)
+            if (!TryLoadComputeShader("GmicVectorPainting", out _compute) ||
+                !TryCreateMaterial("CoreGMIC/VectorPainting"))
             {
-                CoreGMICMod.Instance?.LogWarn("Compute shaders are not supported; VectorPaintingFilter disabled.");
+                _compute = null;
                 return;
             }
 
-            Shader shader = ShaderManager.GetShader("CoreGMIC/VectorPainting");
-            ComputeShader compute = ShaderManager.GetComputeShader("GmicVectorPainting");
-            if (shader == null || compute == null)
-            {
-                return;
-            }
-
-            _material = new Material(shader);
-            _compute = compute;
             _kernelCCLInit = _compute.FindKernel("CSCCLInit");
             _kernelCCLMergeBorders = _compute.FindKernel("CSCCLMergeBorders");
             _kernelCCLFlattenAndAccum = _compute.FindKernel("CSCCLFlattenAndAccum");
         }
 
-        public void Apply(RenderTexture source, RenderTexture destination)
+        public override void Apply(RenderTexture source, RenderTexture destination)
         {
             int w = source.width;
             int h = source.height;
 
-            RenderTextureFormat lumFormat = SystemInfo.SupportsRenderTextureFormat(RenderTextureFormat.RFloat)
-                ? RenderTextureFormat.RFloat
-                : (SystemInfo.SupportsRenderTextureFormat(RenderTextureFormat.ARGBFloat)
-                    ? RenderTextureFormat.ARGBFloat
-                    : RenderTextureFormat.ARGBHalf);
-
-            RenderTextureFormat labelFormat = SystemInfo.SupportsRenderTextureFormat(RenderTextureFormat.ARGBHalf)
-                ? RenderTextureFormat.ARGBHalf
-                : RenderTextureFormat.ARGB32;
-
+            RenderTextureFormat lumFormat = GpuUtils.LuminanceFormat;
+            RenderTextureFormat labelFormat = GpuUtils.ColorFormat;
             RenderTextureFormat stableFormat = SystemInfo.SupportsRenderTextureFormat(RenderTextureFormat.ARGBHalf)
                 ? RenderTextureFormat.ARGBHalf
                 : source.format;
@@ -126,12 +106,12 @@ namespace CoreGMIC.Heavy
                 {
                     if (_hasPrevSource)
                     {
-                        stableSource = GetTempRt(w, h, stableFormat, FilterMode.Point);
+                        stableSource = GpuUtils.GetTempRt(w, h, stableFormat, FilterMode.Point);
 
-                        _material.SetTexture("_PrevSourceTex", _prevSourceRt);
-                        _material.SetFloat("_ColorThreshold", _colorThreshold);
-                        _material.SetFloat("_MinAlpha", _minAlpha);
-                        Graphics.Blit(source, stableSource, _material, 6);
+                        Material.SetTexture("_PrevSourceTex", _prevSourceRt);
+                        Material.SetFloat("_ColorThreshold", _colorThreshold);
+                        Material.SetFloat("_MinAlpha", _minAlpha);
+                        Graphics.Blit(source, stableSource, Material, 6);
                         activeSource = stableSource;
                     }
 
@@ -143,13 +123,13 @@ namespace CoreGMIC.Heavy
                     _hasPrevSource = false;
                 }
 
-                lumFull = GetTempRt(w, h, lumFormat, FilterMode.Bilinear);
-                Graphics.Blit(activeSource, lumFull, _material, 0);
+                lumFull = GpuUtils.GetTempRt(w, h, lumFormat);
+                Graphics.Blit(activeSource, lumFull, Material, 0);
 
                 float sigmaFull = (10f - _details) * 0.01f * Mathf.Max(w, h);
                 if (sigmaFull > 0.05f)
                 {
-                    lumScratch = GetTempRt(w, h, lumFormat, FilterMode.Bilinear);
+                    lumScratch = GpuUtils.GetTempRt(w, h, lumFormat);
 
                     if (sigmaFull <= 6.0f)
                     {
@@ -159,8 +139,8 @@ namespace CoreGMIC.Heavy
                     {
                         int hw = Mathf.Max(1, w / 2);
                         int hh = Mathf.Max(1, h / 2);
-                        halfA = GetTempRt(hw, hh, lumFormat, FilterMode.Bilinear);
-                        halfB = GetTempRt(hw, hh, lumFormat, FilterMode.Bilinear);
+                        halfA = GpuUtils.GetTempRt(hw, hh, lumFormat);
+                        halfB = GpuUtils.GetTempRt(hw, hh, lumFormat);
                         Graphics.Blit(lumFull, halfA);
 
                         if (sigmaFull <= 14.0f)
@@ -173,8 +153,8 @@ namespace CoreGMIC.Heavy
                         {
                             int qw = Mathf.Max(1, w / 4);
                             int qh = Mathf.Max(1, h / 4);
-                            quarterA = GetTempRt(qw, qh, lumFormat, FilterMode.Bilinear);
-                            quarterB = GetTempRt(qw, qh, lumFormat, FilterMode.Bilinear);
+                            quarterA = GpuUtils.GetTempRt(qw, qh, lumFormat);
+                            quarterB = GpuUtils.GetTempRt(qw, qh, lumFormat);
                             Graphics.Blit(halfA, quarterA);
 
                             if (sigmaFull <= 28.0f)
@@ -188,8 +168,8 @@ namespace CoreGMIC.Heavy
                             {
                                 int ew = Mathf.Max(1, w / 8);
                                 int eh = Mathf.Max(1, h / 8);
-                                eighthA = GetTempRt(ew, eh, lumFormat, FilterMode.Bilinear);
-                                eighthB = GetTempRt(ew, eh, lumFormat, FilterMode.Bilinear);
+                                eighthA = GpuUtils.GetTempRt(ew, eh, lumFormat);
+                                eighthB = GpuUtils.GetTempRt(ew, eh, lumFormat);
                                 Graphics.Blit(quarterA, eighthA);
 
                                 float reconVar = ReconstructSigma * ReconstructSigma * (1f + 4f + 16f);
@@ -211,12 +191,12 @@ namespace CoreGMIC.Heavy
                 }
 
                 // Classify gradient direction and smooth out 1px bridges/speckles with two 3x3 mode passes.
-                labelRt = GetTempRt(w, h, labelFormat, FilterMode.Point);
-                labelCleanRt = GetTempRt(w, h, labelFormat, FilterMode.Point);
+                labelRt = GpuUtils.GetTempRt(w, h, labelFormat, FilterMode.Point);
+                labelCleanRt = GpuUtils.GetTempRt(w, h, labelFormat, FilterMode.Point);
 
-                Graphics.Blit(lumFull, labelRt, _material, 3);
-                Graphics.Blit(labelRt, labelCleanRt, _material, 5);
-                Graphics.Blit(labelCleanRt, labelRt, _material, 5);
+                Graphics.Blit(lumFull, labelRt, Material, 3);
+                Graphics.Blit(labelRt, labelCleanRt, Material, 5);
+                Graphics.Blit(labelCleanRt, labelRt, Material, 5);
 
                 int groupsX = (w + 15) / 16;
                 int groupsY = (h + 15) / 16;
@@ -239,52 +219,44 @@ namespace CoreGMIC.Heavy
                 _compute.SetBuffer(_kernelCCLFlattenAndAccum, "_ShapeSumBuffer", _shapeSumBuffer);
                 _compute.Dispatch(_kernelCCLFlattenAndAccum, groupsX, groupsY, 1);
 
-                _material.SetInt("_Width", w);
-                _material.SetInt("_Height", h);
-                _material.SetBuffer("_ParentBuffer", _parentBuffer);
-                _material.SetBuffer("_ShapeSumBuffer", _shapeSumBuffer);
-                Graphics.Blit(activeSource, destination, _material, 4);
+                Material.SetInt("_Width", w);
+                Material.SetInt("_Height", h);
+                Material.SetBuffer("_ParentBuffer", _parentBuffer);
+                Material.SetBuffer("_ShapeSumBuffer", _shapeSumBuffer);
+                Graphics.Blit(activeSource, destination, Material, 4);
             }
             finally
             {
-                ReleaseTemp(stableSource);
-                ReleaseTemp(lumFull);
-                ReleaseTemp(lumScratch);
-                ReleaseTemp(halfA);
-                ReleaseTemp(halfB);
-                ReleaseTemp(quarterA);
-                ReleaseTemp(quarterB);
-                ReleaseTemp(eighthA);
-                ReleaseTemp(eighthB);
-                ReleaseTemp(labelRt);
-                ReleaseTemp(labelCleanRt);
+                GpuUtils.ReleaseTemp(stableSource);
+                GpuUtils.ReleaseTemp(lumFull);
+                GpuUtils.ReleaseTemp(lumScratch);
+                GpuUtils.ReleaseTemp(halfA);
+                GpuUtils.ReleaseTemp(halfB);
+                GpuUtils.ReleaseTemp(quarterA);
+                GpuUtils.ReleaseTemp(quarterB);
+                GpuUtils.ReleaseTemp(eighthA);
+                GpuUtils.ReleaseTemp(eighthB);
+                GpuUtils.ReleaseTemp(labelRt);
+                GpuUtils.ReleaseTemp(labelCleanRt);
             }
         }
 
-        public void ResetParameters()
+        public override void ResetParameters()
         {
-            foreach (FilterParameter param in _parameters)
-            {
-                param.Reset();
-            }
+            base.ResetParameters();
             _hasPrevSource = false;
         }
 
-        public void Dispose()
+        public override void Dispose()
         {
-            if (_material != null)
-            {
-                Object.Destroy(_material);
-                _material = null;
-            }
-
-            ReleaseRt(ref _prevSourceRt);
-            ReleaseBuffer(ref _parentBuffer);
-            ReleaseBuffer(ref _shapeSumBuffer);
+            GpuUtils.ReleaseRt(ref _prevSourceRt);
+            GpuUtils.ReleaseBuffer(ref _parentBuffer);
+            GpuUtils.ReleaseBuffer(ref _shapeSumBuffer);
             _allocW = -1;
             _allocH = -1;
             _hasPrevSource = false;
             _compute = null;
+            base.Dispose();
         }
 
         private void RunMultiPassGaussian(RenderTexture target, RenderTexture scratch, float totalSigma)
@@ -299,9 +271,9 @@ namespace CoreGMIC.Heavy
 
         private void RunSingleGaussian(RenderTexture target, RenderTexture scratch, float sigma)
         {
-            _material.SetFloat("_SigmaPx", sigma);
-            Graphics.Blit(target, scratch, _material, 1);
-            Graphics.Blit(scratch, target, _material, 2);
+            Material.SetFloat("_SigmaPx", sigma);
+            Graphics.Blit(target, scratch, Material, 1);
+            Graphics.Blit(scratch, target, Material, 2);
         }
 
         private void EnsureBuffers(int w, int h, RenderTextureFormat stableFormat)
@@ -312,68 +284,20 @@ namespace CoreGMIC.Heavy
                 return;
             }
 
-            ReleaseBuffer(ref _parentBuffer);
-            ReleaseBuffer(ref _shapeSumBuffer);
-            ReleaseRt(ref _prevSourceRt);
+            GpuUtils.ReleaseBuffer(ref _parentBuffer);
+            GpuUtils.ReleaseBuffer(ref _shapeSumBuffer);
+            GpuUtils.ReleaseRt(ref _prevSourceRt);
 
             int totalPixels = Mathf.Max(1, w * h);
             _parentBuffer = new ComputeBuffer(totalPixels, sizeof(uint));
             _shapeSumBuffer = new ComputeBuffer(totalPixels * 4, sizeof(uint));
 
-            RenderTextureDescriptor desc = new RenderTextureDescriptor(w, h, stableFormat, 0)
-            {
-                sRGB = false
-            };
-            _prevSourceRt = new RenderTexture(desc)
-            {
-                filterMode = FilterMode.Point,
-                wrapMode = TextureWrapMode.Clamp
-            };
-            _prevSourceRt.Create();
+            _prevSourceRt = GpuUtils.CreateRt(w, h, stableFormat, FilterMode.Point, RenderTextureReadWrite.Linear);
 
             _allocW = w;
             _allocH = h;
             _allocSourceFormat = stableFormat;
             _hasPrevSource = false;
-        }
-
-        private static RenderTexture GetTempRt(int width, int height, RenderTextureFormat format, FilterMode filterMode)
-        {
-            RenderTextureDescriptor desc = new RenderTextureDescriptor(width, height, format, 0)
-            {
-                sRGB = false
-            };
-            RenderTexture rt = RenderTexture.GetTemporary(desc);
-            rt.filterMode = filterMode;
-            rt.wrapMode = TextureWrapMode.Clamp;
-            return rt;
-        }
-
-        private static void ReleaseTemp(RenderTexture rt)
-        {
-            if (rt != null)
-            {
-                RenderTexture.ReleaseTemporary(rt);
-            }
-        }
-
-        private static void ReleaseRt(ref RenderTexture rt)
-        {
-            if (rt != null)
-            {
-                rt.Release();
-                Object.Destroy(rt);
-                rt = null;
-            }
-        }
-
-        private static void ReleaseBuffer(ref ComputeBuffer buf)
-        {
-            if (buf != null)
-            {
-                buf.Release();
-                buf = null;
-            }
         }
     }
 }

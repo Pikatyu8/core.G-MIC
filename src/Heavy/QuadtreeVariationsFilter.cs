@@ -1,10 +1,9 @@
-using System.Collections.Generic;
 using CoreGMIC.Core;
 using UnityEngine;
 
 namespace CoreGMIC.Heavy
 {
-    public class QuadtreeVariationsFilter : IFilter
+    public class QuadtreeVariationsFilter : FilterBase
     {
         private const int PyramidLevels = 7; // 4, 8, 16, 32, 64, 128, 256 px
 
@@ -18,9 +17,6 @@ namespace CoreGMIC.Heavy
             "_TensorL0", "_TensorL1", "_TensorL2", "_TensorL3", "_TensorL4", "_TensorL5", "_TensorL6"
         };
 
-        private Material _material;
-        private readonly List<FilterParameter> _parameters = new List<FilterParameter>();
-
         private int _mode = 0;
         private int _precision = 1024;
         private float _homogeneity = 0.5f;
@@ -30,16 +26,14 @@ namespace CoreGMIC.Heavy
         private float _anisotropy = 1.0f;
         private bool _onlyLeaves = true;
 
-        public string Id => "fx_quadtree";
-        public string DisplayName => "Quadtree Variations";
-        public string Description => "Decomposes the frame into adaptive quadtree squares, triangles, or ellipses.";
-        public FilterCategory Category => FilterCategory.Heavy;
-        public bool IsAvailable => _material != null;
-        public IReadOnlyList<FilterParameter> Parameters => _parameters;
+        public override string Id => "fx_quadtree";
+        public override string DisplayName => "Quadtree Variations";
+        public override string Description => "Decomposes the frame into adaptive quadtree squares, triangles, or ellipses.";
+        public override FilterCategory Category => FilterCategory.Experimental;
 
         public QuadtreeVariationsFilter()
         {
-            _parameters.Add(FilterParameter.Choice(
+            AddParameter(FilterParameter.Choice(
                 "mode",
                 "Mode",
                 "Quadtree rendering mode.",
@@ -47,28 +41,28 @@ namespace CoreGMIC.Heavy
                 0,
                 v => _mode = v));
 
-            _parameters.Add(FilterParameter.Int(
+            AddParameter(FilterParameter.Int(
                 "precision",
                 "Precision",
                 "Subdivision detail level (higher = finer cells).",
                 2, 4096, 1024,
                 v => _precision = v));
 
-            _parameters.Add(FilterParameter.Float(
+            AddParameter(FilterParameter.Float(
                 "homogeneity",
                 "Homogeneity",
                 "Bias toward splitting larger regions over local contrast.",
                 0f, 2f, 0.5f,
                 v => _homogeneity = v));
 
-            _parameters.Add(FilterParameter.Int(
+            AddParameter(FilterParameter.Int(
                 "outline",
                 "Outline",
                 "Border thickness in pixels (Squares and Ellipse Painting).",
                 0, 4, 0,
                 v => _outline = v));
 
-            _parameters.Add(FilterParameter.Float(
+            AddParameter(FilterParameter.Float(
                 "radius1",
                 "Primary Radius",
                 "Primary ellipse radius multiplier.",
@@ -76,7 +70,7 @@ namespace CoreGMIC.Heavy
                 v => _radius1 = v,
                 isVisible: () => _mode == 2));
 
-            _parameters.Add(FilterParameter.Float(
+            AddParameter(FilterParameter.Float(
                 "radius2",
                 "Secondary Radius",
                 "Secondary ellipse radius multiplier.",
@@ -84,7 +78,7 @@ namespace CoreGMIC.Heavy
                 v => _radius2 = v,
                 isVisible: () => _mode == 2));
 
-            _parameters.Add(FilterParameter.Float(
+            AddParameter(FilterParameter.Float(
                 "anisotropy",
                 "Anisotropy",
                 "Ellipse elongation strength along local edges.",
@@ -92,7 +86,7 @@ namespace CoreGMIC.Heavy
                 v => _anisotropy = v,
                 isVisible: () => _mode == 2));
 
-            _parameters.Add(FilterParameter.Bool(
+            AddParameter(FilterParameter.Bool(
                 "only_leaves",
                 "Only Leaves",
                 "Render only leaf ellipses instead of layering parent levels.",
@@ -101,31 +95,20 @@ namespace CoreGMIC.Heavy
                 isVisible: () => _mode == 2));
         }
 
-        public void Initialize()
+        public override void Initialize()
         {
-            Shader shader = ShaderManager.GetShader("CoreGMIC/Quadtree");
-            if (shader == null)
-            {
-                return;
-            }
-
-            _material = new Material(shader);
+            TryCreateMaterial("CoreGMIC/Quadtree");
         }
 
-        public void Apply(RenderTexture source, RenderTexture destination)
+        public override void Apply(RenderTexture source, RenderTexture destination)
         {
             int srcW = source.width;
             int srcH = source.height;
             int gridW = ((srcW + 255) / 256) * 256;
             int gridH = ((srcH + 255) / 256) * 256;
 
-            RenderTextureFormat colorFormat = SystemInfo.SupportsRenderTextureFormat(RenderTextureFormat.ARGBHalf)
-                ? RenderTextureFormat.ARGBHalf
-                : RenderTextureFormat.ARGB32;
-
-            RenderTextureFormat tensorFormat = SystemInfo.SupportsRenderTextureFormat(RenderTextureFormat.ARGBFloat)
-                ? RenderTextureFormat.ARGBFloat
-                : colorFormat;
+            RenderTextureFormat colorFormat = GpuUtils.ColorFormat;
+            RenderTextureFormat tensorFormat = GpuUtils.FloatFormat;
 
             RenderTexture[] colorLevels = new RenderTexture[PyramidLevels];
             RenderTexture[] tensorLevels = new RenderTexture[PyramidLevels];
@@ -137,77 +120,49 @@ namespace CoreGMIC.Heavy
                     int w = Mathf.Max(1, gridW >> (k + 2));
                     int h = Mathf.Max(1, gridH >> (k + 2));
 
-                    colorLevels[k] = RenderTexture.GetTemporary(w, h, 0, colorFormat, RenderTextureReadWrite.Linear);
-                    colorLevels[k].filterMode = FilterMode.Point;
-                    colorLevels[k].wrapMode = TextureWrapMode.Clamp;
-
-                    tensorLevels[k] = RenderTexture.GetTemporary(w, h, 0, tensorFormat, RenderTextureReadWrite.Linear);
-                    tensorLevels[k].filterMode = FilterMode.Point;
-                    tensorLevels[k].wrapMode = TextureWrapMode.Clamp;
+                    colorLevels[k] = GpuUtils.GetTempRt(w, h, colorFormat, FilterMode.Point);
+                    tensorLevels[k] = GpuUtils.GetTempRt(w, h, tensorFormat, FilterMode.Point);
                 }
 
-                _material.SetVector("_SourceSize", new Vector4(srcW, srcH, gridW, gridH));
+                Material.SetVector("_SourceSize", new Vector4(srcW, srcH, gridW, gridH));
 
                 // Pass 0 & Pass 1: Extract base 4x4 cell statistics and structure tensor.
-                Graphics.Blit(source, colorLevels[0], _material, 0);
-                Graphics.Blit(source, tensorLevels[0], _material, 1);
+                Graphics.Blit(source, colorLevels[0], Material, 0);
+                Graphics.Blit(source, tensorLevels[0], Material, 1);
 
                 // Pass 2: Build exact 2x2 downsample pyramid.
                 for (int k = 1; k < PyramidLevels; k++)
                 {
-                    Graphics.Blit(colorLevels[k - 1], colorLevels[k], _material, 2);
-                    Graphics.Blit(tensorLevels[k - 1], tensorLevels[k], _material, 2);
+                    Graphics.Blit(colorLevels[k - 1], colorLevels[k], Material, 2);
+                    Graphics.Blit(tensorLevels[k - 1], tensorLevels[k], Material, 2);
                 }
 
                 for (int k = 0; k < PyramidLevels; k++)
                 {
-                    _material.SetTexture(ColorUniforms[k], colorLevels[k]);
-                    _material.SetTexture(TensorUniforms[k], tensorLevels[k]);
+                    Material.SetTexture(ColorUniforms[k], colorLevels[k]);
+                    Material.SetTexture(TensorUniforms[k], tensorLevels[k]);
                 }
 
-                _material.SetInt("_Mode", _mode);
-                _material.SetFloat("_Precision", _precision);
-                _material.SetFloat("_Homogeneity", _homogeneity);
-                _material.SetFloat("_Outline", _outline);
-                _material.SetFloat("_Radius1", _radius1);
-                _material.SetFloat("_Radius2", _radius2);
-                _material.SetFloat("_Anisotropy", _anisotropy);
-                _material.SetFloat("_OnlyLeaves", _onlyLeaves ? 1f : 0f);
+                Material.SetInt("_Mode", _mode);
+                Material.SetFloat("_Precision", _precision);
+                Material.SetFloat("_Homogeneity", _homogeneity);
+                Material.SetFloat("_Outline", _outline);
+                Material.SetFloat("_Radius1", _radius1);
+                Material.SetFloat("_Radius2", _radius2);
+                Material.SetFloat("_Anisotropy", _anisotropy);
+                Material.SetFloat("_OnlyLeaves", _onlyLeaves ? 1f : 0f);
 
                 // Pass 3: Squares & Sierpinski; Pass 4: Ellipse Painting.
                 int compositePass = (_mode == 2) ? 4 : 3;
-                Graphics.Blit(source, destination, _material, compositePass);
+                Graphics.Blit(source, destination, Material, compositePass);
             }
             finally
             {
                 for (int k = 0; k < PyramidLevels; k++)
                 {
-                    if (colorLevels[k] != null)
-                    {
-                        RenderTexture.ReleaseTemporary(colorLevels[k]);
-                    }
-                    if (tensorLevels[k] != null)
-                    {
-                        RenderTexture.ReleaseTemporary(tensorLevels[k]);
-                    }
+                    GpuUtils.ReleaseTemp(colorLevels[k]);
+                    GpuUtils.ReleaseTemp(tensorLevels[k]);
                 }
-            }
-        }
-
-        public void ResetParameters()
-        {
-            foreach (FilterParameter param in _parameters)
-            {
-                param.Reset();
-            }
-        }
-
-        public void Dispose()
-        {
-            if (_material != null)
-            {
-                Object.Destroy(_material);
-                _material = null;
             }
         }
     }

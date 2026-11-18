@@ -13,15 +13,9 @@ int _HistoryCount;
 float _Persistence;
 uint _StepIndex;
 
-uint HashU32(uint x)
-{
-    x ^= x >> 16;
-    x *= 0x7FEB352Du;
-    x ^= x >> 15;
-    x *= 0x846CA68Bu;
-    x ^= x >> 16;
-    return x;
-}
+#define GMIC_COMPUTE 1
+#define GMIC_USE_HASH 1
+#include "GmicCommon.cginc"
 
 uint GetEffectiveHistoryLimit(int radius)
 {

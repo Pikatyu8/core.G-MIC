@@ -1,14 +1,12 @@
-using System.Collections.Generic;
 using CoreGMIC.Core;
 using UnityEngine;
 
 namespace CoreGMIC.LUT
 {
-    public class SinLutFilter : IFilter
+    public class SinLutFilter : FilterBase
     {
         private const int LutSize = 64;
 
-        private Material _material;
         private Texture2D _lutTexture;
 
         private int _mode = 0; // 0: |sin|, 1: |tan|, 2: |sec| - 1
@@ -18,18 +16,15 @@ namespace CoreGMIC.LUT
         private bool _forceWhite = false;
         private float _intensity = 1f;
 
-        private readonly List<FilterParameter> _parameters = new List<FilterParameter>();
-
-        public string Id => "test_sin_lut";
-        public string DisplayName => "Trigonometry LUT";
-        public string Description => "Color LUT computing |sin|, |tan|, or |sec|-1 oscillations per channel.";
-        public FilterCategory Category => FilterCategory.Lut;
-        public bool IsAvailable => _material != null && _lutTexture != null;
-        public IReadOnlyList<FilterParameter> Parameters => _parameters;
+        public override string Id => "test_sin_lut";
+        public override string DisplayName => "Trigonometry LUT";
+        public override string Description => "Color LUT computing |sin|, |tan|, or |sec|-1 oscillations per channel.";
+        public override FilterCategory Category => FilterCategory.Lut;
+        public override bool IsAvailable => base.IsAvailable && _lutTexture != null;
 
         public SinLutFilter()
         {
-            _parameters.Add(FilterParameter.Choice(
+            AddParameter(FilterParameter.Choice(
                 "trig_mode",
                 "Function",
                 "Trigonometric mapping function applied per RGB channel.",
@@ -41,7 +36,7 @@ namespace CoreGMIC.LUT
                     RebuildLut();
                 }));
 
-            _parameters.Add(FilterParameter.Float(
+            AddParameter(FilterParameter.Float(
                 "sin_osc",
                 "Sine Osc (xPI)",
                 "Half-wave oscillation count for |sin(c * N * PI)|.",
@@ -54,7 +49,7 @@ namespace CoreGMIC.LUT
                 isVisible: () => _mode == 0,
                 step: 0.1f));
 
-            _parameters.Add(FilterParameter.Float(
+            AddParameter(FilterParameter.Float(
                 "tan_osc",
                 "Tan Osc (xPI)",
                 "Period frequency for clamped |tan(c * N * PI)|.",
@@ -67,7 +62,7 @@ namespace CoreGMIC.LUT
                 isVisible: () => _mode == 1,
                 step: 0.1f));
 
-            _parameters.Add(FilterParameter.Float(
+            AddParameter(FilterParameter.Float(
                 "sec_osc",
                 "Sec Osc (xPI)",
                 "Period frequency for clamped |sec(c * N * PI)| - 1.",
@@ -80,7 +75,7 @@ namespace CoreGMIC.LUT
                 isVisible: () => _mode == 2,
                 step: 0.1f));
 
-            _parameters.Add(FilterParameter.Bool(
+            AddParameter(FilterParameter.Bool(
                 "force_white",
                 "Force White -> White",
                 "Smoothly preserve pure white highlights instead of wrapping them to black.",
@@ -91,7 +86,7 @@ namespace CoreGMIC.LUT
                     RebuildLut();
                 }));
 
-            _parameters.Add(FilterParameter.Float(
+            AddParameter(FilterParameter.Float(
                 "intensity",
                 "Intensity",
                 "Blend intensity with original frame.",
@@ -99,56 +94,37 @@ namespace CoreGMIC.LUT
                 val =>
                 {
                     _intensity = val;
-                    if (_material != null)
+                    if (Material != null)
                     {
-                        _material.SetFloat("_Intensity", _intensity);
+                        Material.SetFloat("_Intensity", _intensity);
                     }
                 },
                 step: 0.02f));
         }
 
-        public void Initialize()
+        public override void Initialize()
         {
-            Shader shader = ShaderManager.GetShader("CoreGMIC/Lut");
-            if (shader == null)
+            if (!TryCreateMaterial("CoreGMIC/Lut"))
             {
                 return;
             }
 
             _lutTexture = LutTextureGenerator.GenerateStrip(EvaluateCurrent, LutSize);
 
-            _material = new Material(shader);
-            _material.SetTexture("_LutTex", _lutTexture);
-            _material.SetFloat("_LutSize", LutSize);
-            _material.SetFloat("_Intensity", _intensity);
+            Material.SetTexture("_LutTex", _lutTexture);
+            Material.SetFloat("_LutSize", LutSize);
+            Material.SetFloat("_Intensity", _intensity);
         }
 
-        public void Apply(RenderTexture source, RenderTexture destination)
+        public override void Apply(RenderTexture source, RenderTexture destination)
         {
-            Graphics.Blit(source, destination, _material);
+            Graphics.Blit(source, destination, Material);
         }
 
-        public void ResetParameters()
+        public override void Dispose()
         {
-            foreach (FilterParameter param in _parameters)
-            {
-                param.Reset();
-            }
-        }
-
-        public void Dispose()
-        {
-            if (_material != null)
-            {
-                Object.Destroy(_material);
-                _material = null;
-            }
-
-            if (_lutTexture != null)
-            {
-                Object.Destroy(_lutTexture);
-                _lutTexture = null;
-            }
+            GpuUtils.DestroyObject(ref _lutTexture);
+            base.Dispose();
         }
 
         private void RebuildLut()

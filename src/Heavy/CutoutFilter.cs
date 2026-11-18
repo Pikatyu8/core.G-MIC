@@ -1,17 +1,15 @@
-using System.Collections.Generic;
 using CoreGMIC.Core;
 using UnityEngine;
 
 namespace CoreGMIC.Heavy
 {
-    public class CutoutFilter : IFilter
+    public class CutoutFilter : FilterBase
     {
         private const int MaxLevels = 32;
         private const int KMeansIters = 6;
         private const float TemporalAlpha = 0.15f;
         private static readonly int[] JfaSteps = { 64, 32, 16, 8, 4, 2, 1 };
 
-        private Material _material;
         private ComputeShader _compute;
 
         private int _kernelInitCentroids;
@@ -45,24 +43,20 @@ namespace CoreGMIC.Heavy
         private bool _hasAreaHistory;
         private bool _hasMinMaxHistory;
 
-        private readonly List<FilterParameter> _parameters = new List<FilterParameter>();
-
         private int _numLevels = 4;
         private float _edgeSimplicity = 0.5f;
         private int _edgeFidelity = 4;
         private bool _normalize = true;
 
-        public string Id => "fx_cutout";
-        public string DisplayName => "Cutout";
-        public string Description => "Reduces colors into clean paper-cutout shapes with small-island removal.";
-        public FilterCategory Category => FilterCategory.Standard;
-
-        public bool IsAvailable => _material != null && _compute != null && SystemInfo.supportsComputeShaders;
-        public IReadOnlyList<FilterParameter> Parameters => _parameters;
+        public override string Id => "fx_cutout";
+        public override string DisplayName => "Cutout";
+        public override string Description => "Reduces colors into clean paper-cutout shapes with small-island removal.";
+        public override FilterCategory Category => FilterCategory.Standard;
+        public override bool IsAvailable => base.IsAvailable && _compute != null && SystemInfo.supportsComputeShaders;
 
         public CutoutFilter()
         {
-            _parameters.Add(FilterParameter.Int(
+            AddParameter(FilterParameter.Int(
                 "num_levels",
                 "Number of Levels",
                 "Number of quantized cutout color layers.",
@@ -76,21 +70,21 @@ namespace CoreGMIC.Heavy
                     }
                 }));
 
-            _parameters.Add(FilterParameter.Float(
+            AddParameter(FilterParameter.Float(
                 "edge_simplicity",
                 "Edge Simplicity",
                 "Area threshold (% of median region area) for removing small islands.",
                 0f, 3f, 0.5f,
                 v => _edgeSimplicity = v));
 
-            _parameters.Add(FilterParameter.Int(
+            AddParameter(FilterParameter.Int(
                 "edge_fidelity",
                 "Edge Fidelity",
                 "Preserves finer silhouette detail (lower = stronger median smoothing).",
                 0, 10, 4,
                 v => _edgeFidelity = v));
 
-            _parameters.Add(FilterParameter.Bool(
+            AddParameter(FilterParameter.Bool(
                 "normalize",
                 "Normalize",
                 "Stretch final color range to [0, 255].",
@@ -98,23 +92,14 @@ namespace CoreGMIC.Heavy
                 v => _normalize = v));
         }
 
-        public void Initialize()
+        public override void Initialize()
         {
-            if (!SystemInfo.supportsComputeShaders)
+            if (!TryLoadComputeShader("GmicCutout", out _compute) ||
+                !TryCreateMaterial("CoreGMIC/Cutout"))
             {
-                CoreGMICMod.Instance?.LogWarn("Compute shaders are not supported; CutoutFilter disabled.");
+                _compute = null;
                 return;
             }
-
-            Shader shader = ShaderManager.GetShader("CoreGMIC/Cutout");
-            ComputeShader compute = ShaderManager.GetComputeShader("GmicCutout");
-            if (shader == null || compute == null)
-            {
-                return;
-            }
-
-            _material = new Material(shader);
-            _compute = compute;
 
             _kernelInitCentroids = _compute.FindKernel("CSInitCentroids");
             _kernelClearKMeans = _compute.FindKernel("CSClearKMeans");
@@ -145,19 +130,14 @@ namespace CoreGMIC.Heavy
             _hasMinMaxHistory = false;
         }
 
-        public void Apply(RenderTexture source, RenderTexture destination)
+        public override void Apply(RenderTexture source, RenderTexture destination)
         {
             int w = source.width;
             int h = source.height;
             EnsurePixelBuffers(w, h);
 
-            RenderTextureFormat colorFormat = SystemInfo.SupportsRenderTextureFormat(RenderTextureFormat.ARGBHalf)
-                ? RenderTextureFormat.ARGBHalf
-                : RenderTextureFormat.ARGB32;
-
-            RenderTextureFormat jfaFormat = SystemInfo.SupportsRenderTextureFormat(RenderTextureFormat.ARGBFloat)
-                ? RenderTextureFormat.ARGBFloat
-                : colorFormat;
+            RenderTextureFormat colorFormat = GpuUtils.ColorFormat;
+            RenderTextureFormat jfaFormat = GpuUtils.FloatFormat;
 
             RenderTexture medA = null;
             RenderTexture medB = null;
@@ -175,26 +155,26 @@ namespace CoreGMIC.Heavy
                 int medianSize = Mathf.Clamp(10 - _edgeFidelity, 0, 10);
                 if (medianSize > 1)
                 {
-                    medA = GetTempRt(w, h, colorFormat, FilterMode.Bilinear);
-                    medB = GetTempRt(w, h, colorFormat, FilterMode.Bilinear);
+                    medA = GpuUtils.GetTempRt(w, h, colorFormat);
+                    medB = GpuUtils.GetTempRt(w, h, colorFormat);
 
-                    _material.SetInt("_MedianSize", medianSize);
-                    Graphics.Blit(source, medA, _material, 0);
-                    Graphics.Blit(medA, medB, _material, 1);
+                    Material.SetInt("_MedianSize", medianSize);
+                    Graphics.Blit(source, medA, Material, 0);
+                    Graphics.Blit(medA, medB, Material, 1);
                     preQuant = medB;
                 }
 
                 // 2. Downsample to 64x64 via bilinear pyramid for stable, flicker-free K-Means.
-                dsA = GetTempRt(256, 144, colorFormat, FilterMode.Bilinear);
-                dsB = GetTempRt(64, 64, colorFormat, FilterMode.Bilinear);
+                dsA = GpuUtils.GetTempRt(256, 144, colorFormat);
+                dsB = GpuUtils.GetTempRt(64, 64, colorFormat);
                 Graphics.Blit(preQuant, dsA);
                 Graphics.Blit(dsA, dsB);
                 RunKMeans(dsB);
 
-                quantRt = GetTempRt(w, h, colorFormat, FilterMode.Point);
-                _material.SetInt("_NumLevels", _numLevels);
-                _material.SetBuffer("_Centroids", _centroidsBuffer);
-                Graphics.Blit(preQuant, quantRt, _material, 2);
+                quantRt = GpuUtils.GetTempRt(w, h, colorFormat, FilterMode.Point);
+                Material.SetInt("_NumLevels", _numLevels);
+                Material.SetBuffer("_Centroids", _centroidsBuffer);
+                Graphics.Blit(preQuant, quantRt, Material, 2);
 
                 RenderTexture cutoutOut = quantRt;
 
@@ -238,8 +218,8 @@ namespace CoreGMIC.Heavy
                     _compute.Dispatch(_kernelAreaFindMedian, 1, 1, 1);
                     _hasAreaHistory = true;
 
-                    jfaA = GetTempRt(w, h, jfaFormat, FilterMode.Point, randomWrite: true);
-                    jfaB = GetTempRt(w, h, jfaFormat, FilterMode.Point);
+                    jfaA = GpuUtils.GetTempRt(w, h, jfaFormat, FilterMode.Point, RenderTextureReadWrite.Linear, randomWrite: true);
+                    jfaB = GpuUtils.GetTempRt(w, h, jfaFormat, FilterMode.Point);
 
                     _compute.SetBuffer(_kernelBuildHoleSeeds, "_ParentBuffer", _parentBuffer);
                     _compute.SetBuffer(_kernelBuildHoleSeeds, "_AreaBuffer", _areaBuffer);
@@ -251,32 +231,32 @@ namespace CoreGMIC.Heavy
                     RenderTexture jfaDst = jfaB;
                     for (int s = 0; s < JfaSteps.Length; s++)
                     {
-                        _material.SetFloat("_JfaStep", JfaSteps[s]);
-                        Graphics.Blit(jfaSrc, jfaDst, _material, 3);
+                        Material.SetFloat("_JfaStep", JfaSteps[s]);
+                        Graphics.Blit(jfaSrc, jfaDst, Material, 3);
                         jfaSrc = jfaDst;
                         jfaDst = (jfaSrc == jfaA) ? jfaB : jfaA;
                     }
 
-                    _material.SetTexture("_JfaTex", jfaSrc);
-                    _material.SetTexture("_BaseTex", source);
+                    Material.SetTexture("_JfaTex", jfaSrc);
+                    Material.SetTexture("_BaseTex", source);
 
                     if (_normalize)
                     {
-                        resolvedRt = GetTempRt(w, h, colorFormat, FilterMode.Point);
-                        Graphics.Blit(quantRt, resolvedRt, _material, 4);
+                        resolvedRt = GpuUtils.GetTempRt(w, h, colorFormat, FilterMode.Point);
+                        Graphics.Blit(quantRt, resolvedRt, Material, 4);
                         cutoutOut = resolvedRt;
                     }
                     else
                     {
-                        Graphics.Blit(quantRt, destination, _material, 4);
+                        Graphics.Blit(quantRt, destination, Material, 4);
                         return;
                     }
                 }
                 else if (!_normalize)
                 {
-                    _material.SetTexture("_JfaTex", Texture2D.blackTexture);
-                    _material.SetTexture("_BaseTex", source);
-                    Graphics.Blit(quantRt, destination, _material, 4);
+                    Material.SetTexture("_JfaTex", Texture2D.blackTexture);
+                    Material.SetTexture("_BaseTex", source);
+                    Graphics.Blit(quantRt, destination, Material, 4);
                     return;
                 }
 
@@ -304,9 +284,9 @@ namespace CoreGMIC.Heavy
                     _compute.Dispatch(_kernelSmoothMinMax, 1, 1, 1);
                     _hasMinMaxHistory = true;
 
-                    _material.SetTexture("_BaseTex", source);
-                    _material.SetBuffer("_StatsBuf", _statsBuffer);
-                    Graphics.Blit(cutoutOut, destination, _material, 5);
+                    Material.SetTexture("_BaseTex", source);
+                    Material.SetBuffer("_StatsBuf", _statsBuffer);
+                    Graphics.Blit(cutoutOut, destination, Material, 5);
                 }
                 else
                 {
@@ -315,45 +295,36 @@ namespace CoreGMIC.Heavy
             }
             finally
             {
-                ReleaseTemp(medA);
-                ReleaseTemp(medB);
-                ReleaseTemp(dsA);
-                ReleaseTemp(dsB);
-                ReleaseTemp(quantRt);
-                ReleaseTemp(jfaA);
-                ReleaseTemp(jfaB);
-                ReleaseTemp(resolvedRt);
+                GpuUtils.ReleaseTemp(medA);
+                GpuUtils.ReleaseTemp(medB);
+                GpuUtils.ReleaseTemp(dsA);
+                GpuUtils.ReleaseTemp(dsB);
+                GpuUtils.ReleaseTemp(quantRt);
+                GpuUtils.ReleaseTemp(jfaA);
+                GpuUtils.ReleaseTemp(jfaB);
+                GpuUtils.ReleaseTemp(resolvedRt);
             }
         }
 
-        public void ResetParameters()
+        public override void ResetParameters()
         {
-            foreach (FilterParameter param in _parameters)
-            {
-                param.Reset();
-            }
+            base.ResetParameters();
             _centroidsInitialized = false;
             _hasAreaHistory = false;
             _hasMinMaxHistory = false;
         }
 
-        public void Dispose()
+        public override void Dispose()
         {
-            if (_material != null)
-            {
-                Object.Destroy(_material);
-                _material = null;
-            }
-
-            ReleaseBuffer(ref _targetCentroidsBuffer);
-            ReleaseBuffer(ref _centroidsBuffer);
-            ReleaseBuffer(ref _kMeansAccumBuffer);
-            ReleaseBuffer(ref _maxErrorBuffer);
-            ReleaseBuffer(ref _parentBuffer);
-            ReleaseBuffer(ref _areaBuffer);
-            ReleaseBuffer(ref _areaHistBuffer);
-            ReleaseBuffer(ref _statsBuffer);
-            ReleaseBuffer(ref _temporalStateBuffer);
+            GpuUtils.ReleaseBuffer(ref _targetCentroidsBuffer);
+            GpuUtils.ReleaseBuffer(ref _centroidsBuffer);
+            GpuUtils.ReleaseBuffer(ref _kMeansAccumBuffer);
+            GpuUtils.ReleaseBuffer(ref _maxErrorBuffer);
+            GpuUtils.ReleaseBuffer(ref _parentBuffer);
+            GpuUtils.ReleaseBuffer(ref _areaBuffer);
+            GpuUtils.ReleaseBuffer(ref _areaHistBuffer);
+            GpuUtils.ReleaseBuffer(ref _statsBuffer);
+            GpuUtils.ReleaseBuffer(ref _temporalStateBuffer);
 
             _allocW = -1;
             _allocH = -1;
@@ -361,6 +332,7 @@ namespace CoreGMIC.Heavy
             _hasAreaHistory = false;
             _hasMinMaxHistory = false;
             _compute = null;
+            base.Dispose();
         }
 
         private void EnsurePixelBuffers(int w, int h)
@@ -370,8 +342,8 @@ namespace CoreGMIC.Heavy
                 return;
             }
 
-            ReleaseBuffer(ref _parentBuffer);
-            ReleaseBuffer(ref _areaBuffer);
+            GpuUtils.ReleaseBuffer(ref _parentBuffer);
+            GpuUtils.ReleaseBuffer(ref _areaBuffer);
 
             int totalPixels = Mathf.Max(1, w * h);
             _parentBuffer = new ComputeBuffer(totalPixels, sizeof(uint));
@@ -421,36 +393,6 @@ namespace CoreGMIC.Heavy
             _compute.SetBuffer(_kernelSmoothCentroids, "_TargetCentroids", _targetCentroidsBuffer);
             _compute.SetBuffer(_kernelSmoothCentroids, "_Centroids", _centroidsBuffer);
             _compute.Dispatch(_kernelSmoothCentroids, 1, 1, 1);
-        }
-
-        private static RenderTexture GetTempRt(int width, int height, RenderTextureFormat format, FilterMode filterMode, bool randomWrite = false)
-        {
-            RenderTextureDescriptor desc = new RenderTextureDescriptor(width, height, format, 0)
-            {
-                sRGB = false,
-                enableRandomWrite = randomWrite
-            };
-            RenderTexture rt = RenderTexture.GetTemporary(desc);
-            rt.filterMode = filterMode;
-            rt.wrapMode = TextureWrapMode.Clamp;
-            return rt;
-        }
-
-        private static void ReleaseTemp(RenderTexture rt)
-        {
-            if (rt != null)
-            {
-                RenderTexture.ReleaseTemporary(rt);
-            }
-        }
-
-        private static void ReleaseBuffer(ref ComputeBuffer buf)
-        {
-            if (buf != null)
-            {
-                buf.Release();
-                buf = null;
-            }
         }
     }
 }

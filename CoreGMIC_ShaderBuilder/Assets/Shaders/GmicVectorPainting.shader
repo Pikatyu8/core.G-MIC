@@ -6,27 +6,7 @@ Shader "CoreGMIC/VectorPainting"
     }
 
     CGINCLUDE
-    #include "UnityCG.cginc"
-
-    struct appdata
-    {
-        float4 vertex : POSITION;
-        float2 uv : TEXCOORD0;
-    };
-
-    struct v2f
-    {
-        float4 pos : SV_POSITION;
-        float2 uv : TEXCOORD0;
-    };
-
-    v2f vert(appdata v)
-    {
-        v2f o;
-        o.pos = UnityObjectToClipPos(v.vertex);
-        o.uv = v.uv;
-        return o;
-    }
+    #include "GmicCommon.cginc"
 
     sampler2D _MainTex;
     float4 _MainTex_TexelSize;

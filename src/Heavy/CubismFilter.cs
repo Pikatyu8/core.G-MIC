@@ -1,19 +1,17 @@
 using System;
-using System.Collections.Generic;
 using CoreGMIC.Core;
 using UnityEngine;
 using UnityEngine.Rendering;
 
 namespace CoreGMIC.Heavy
 {
-    public class CubismFilter : IFilter
+    public class CubismFilter : FilterBase
     {
         private const int MaxQuadsPerIteration = 30000;
         private const float MaxIterOverdrawFactor = 600f;
         private const float MaxFrameOverdrawFactor = 1800f;
         private const int HistorySlotsPerQuad = 64;
 
-        private Material _material;
         private ComputeShader _stepCompute;
         private int _kernelInitHistory;
         private int _kernelStepQuads;
@@ -23,7 +21,6 @@ namespace CoreGMIC.Heavy
         private ComputeBuffer _historyBuffer;
 
         private CommandBuffer _cmd;
-        private readonly List<FilterParameter> _parameters = new List<FilterParameter>();
 
         private int _iterations = 1;
         private float _density = 21f;
@@ -46,58 +43,56 @@ namespace CoreGMIC.Heavy
         private uint _stepIndex;
         private float _nextStepTime;
 
-        public string Id => "fx_cubism";
-        public string DisplayName => "Cubism";
-        public string Description => "Transforms the frame into a cubist composition of rotated textured squares.";
-        public FilterCategory Category => FilterCategory.Standard;
-        public bool IsAvailable => _material != null;
-        public IReadOnlyList<FilterParameter> Parameters => _parameters;
+        public override string Id => "fx_cubism";
+        public override string DisplayName => "Cubism";
+        public override string Description => "Transforms the frame into a cubist composition of rotated textured squares.";
+        public override FilterCategory Category => FilterCategory.Standard;
 
         public CubismFilter()
         {
-            _parameters.Add(FilterParameter.Int(
+            AddParameter(FilterParameter.Int(
                 "iterations",
                 "Iterations",
                 "Number of cubism passes applied sequentially.",
                 0, 10, 1,
                 v => _iterations = v));
 
-            _parameters.Add(FilterParameter.Float(
+            AddParameter(FilterParameter.Float(
                 "density",
                 "Density",
                 "Tile coverage density.",
                 0f, 80f, 21f,
                 v => _density = v));
 
-            _parameters.Add(FilterParameter.Float(
+            AddParameter(FilterParameter.Float(
                 "thickness",
                 "Thickness",
                 "Relative tile size (% of frame).",
                 0f, 50f, 12f,
                 v => _thickness = v));
 
-            _parameters.Add(FilterParameter.Float(
+            AddParameter(FilterParameter.Float(
                 "angle",
                 "Angle",
                 "Maximum random tile rotation in degrees.",
                 0f, 360f, 90f,
                 v => _angle = v));
 
-            _parameters.Add(FilterParameter.Float(
+            AddParameter(FilterParameter.Float(
                 "opacity",
                 "Opacity",
                 "Blend opacity per iteration.",
                 0.01f, 1f, 1f,
                 v => _opacity = v));
 
-            _parameters.Add(FilterParameter.Float(
+            AddParameter(FilterParameter.Float(
                 "smoothness",
                 "Smoothness",
                 "Pre-blur sigma applied to tile texture samples.",
                 0f, 5f, 0f,
                 v => _smoothness = v));
 
-            _parameters.Add(FilterParameter.Bool(
+            AddParameter(FilterParameter.Bool(
                 "animate",
                 "Animate Placement",
                 "Shift each tile within a max pixel radius while avoiding its last M positions.",
@@ -108,7 +103,7 @@ namespace CoreGMIC.Heavy
                     ResetAnimationState();
                 }));
 
-            _parameters.Add(FilterParameter.Int(
+            AddParameter(FilterParameter.Int(
                 "drift_radius",
                 "Max Step (px)",
                 "Maximum step distance in pixels per move.",
@@ -116,7 +111,7 @@ namespace CoreGMIC.Heavy
                 v => _driftRadius = v,
                 isVisible: () => _animate));
 
-            _parameters.Add(FilterParameter.Int(
+            AddParameter(FilterParameter.Int(
                 "history_steps",
                 "No-Repeat Steps",
                 "Number of previous positions each tile must avoid.",
@@ -124,7 +119,7 @@ namespace CoreGMIC.Heavy
                 v => _historySteps = v,
                 isVisible: () => _animate));
 
-            _parameters.Add(FilterParameter.Float(
+            AddParameter(FilterParameter.Float(
                 "persistence",
                 "Direction Persistence",
                 "Momentum along each tile's travel direction (0 = random, 1.0 = long streams).",
@@ -132,7 +127,7 @@ namespace CoreGMIC.Heavy
                 v => _persistence = v,
                 isVisible: () => _animate));
 
-            _parameters.Add(FilterParameter.Float(
+            AddParameter(FilterParameter.Float(
                 "step_rate",
                 "Step Rate (Hz)",
                 "Number of placement steps per second.",
@@ -145,15 +140,13 @@ namespace CoreGMIC.Heavy
                 isVisible: () => _animate));
         }
 
-        public void Initialize()
+        public override void Initialize()
         {
-            Shader shader = ShaderManager.GetShader("CoreGMIC/Cubism");
-            if (shader == null)
+            if (!TryCreateMaterial("CoreGMIC/Cubism"))
             {
                 return;
             }
 
-            _material = new Material(shader);
             _cmd = new CommandBuffer
             {
                 name = "CoreGMIC_Cubism"
@@ -173,7 +166,7 @@ namespace CoreGMIC.Heavy
             }
         }
 
-        public void Apply(RenderTexture source, RenderTexture destination)
+        public override void Apply(RenderTexture source, RenderTexture destination)
         {
             if (_iterations <= 0 || _density <= 0.0001f || _thickness <= 0.0001f || _opacity <= 0.0001f ||
                 (_angle <= 0.0001f && _smoothness <= 0.0001f))
@@ -213,18 +206,18 @@ namespace CoreGMIC.Heavy
 
             try
             {
-                rtA = GetTempRt(w, h, format);
+                rtA = GpuUtils.GetTempRt(w, h, format, FilterMode.Bilinear, RenderTextureReadWrite.Default);
                 if (_iterations > 1)
                 {
-                    rtB = GetTempRt(w, h, format);
+                    rtB = GpuUtils.GetTempRt(w, h, format, FilterMode.Bilinear, RenderTextureReadWrite.Default);
                 }
 
-                canvasRt = GetTempRt(w, h, format);
+                canvasRt = GpuUtils.GetTempRt(w, h, format, FilterMode.Bilinear, RenderTextureReadWrite.Default);
 
                 if (_smoothness > 0.001f)
                 {
-                    blurA = GetTempRt(w, h, format);
-                    blurB = GetTempRt(w, h, format);
+                    blurA = GpuUtils.GetTempRt(w, h, format, FilterMode.Bilinear, RenderTextureReadWrite.Default);
+                    blurB = GpuUtils.GetTempRt(w, h, format, FilterMode.Bilinear, RenderTextureReadWrite.Default);
                 }
 
                 Matrix4x4 orthoProj = GL.GetGPUProjectionMatrix(Matrix4x4.Ortho(0f, 1f, 0f, 1f, -1f, 1f), false);
@@ -235,26 +228,26 @@ namespace CoreGMIC.Heavy
                     RenderTexture sampleTex = curr;
                     if (_smoothness > 0.001f)
                     {
-                        _material.SetFloat("_Smoothness", _smoothness);
-                        Graphics.Blit(curr, blurA, _material, 0);
-                        Graphics.Blit(blurA, blurB, _material, 1);
+                        Material.SetFloat("_Smoothness", _smoothness);
+                        Graphics.Blit(curr, blurA, Material, 0);
+                        Graphics.Blit(blurA, blurB, Material, 1);
                         sampleTex = blurB;
                     }
 
                     Graphics.Blit(curr, canvasRt);
 
-                    _material.SetTexture("_MainTex", sampleTex);
-                    _material.SetVector("_CubismParams", new Vector4(p, _angle * Mathf.Deg2Rad, w, h));
-                    _material.SetInt("_IterSeed", iter + 1);
-                    _material.SetInt("_UseOffsets", useOffsets ? 1 : 0);
-                    _material.SetInt("_OffsetBase", iter * quadCount);
-                    _material.SetBuffer("_CurrentOffsets", useOffsets ? _offsetsBuffer : _dummyOffsetBuffer);
+                    Material.SetTexture("_MainTex", sampleTex);
+                    Material.SetVector("_CubismParams", new Vector4(p, _angle * Mathf.Deg2Rad, w, h));
+                    Material.SetInt("_IterSeed", iter + 1);
+                    Material.SetInt("_UseOffsets", useOffsets ? 1 : 0);
+                    Material.SetInt("_OffsetBase", iter * quadCount);
+                    Material.SetBuffer("_CurrentOffsets", useOffsets ? _offsetsBuffer : _dummyOffsetBuffer);
 
                     _cmd.Clear();
                     _cmd.SetRenderTarget(canvasRt);
                     _cmd.SetViewport(new Rect(0f, 0f, w, h));
                     _cmd.SetViewProjectionMatrices(Matrix4x4.identity, orthoProj);
-                    _cmd.DrawProcedural(Matrix4x4.identity, _material, 2, MeshTopology.Triangles, 6, quadCount);
+                    _cmd.DrawProcedural(Matrix4x4.identity, Material, 2, MeshTopology.Triangles, 6, quadCount);
                     Graphics.ExecuteCommandBuffer(_cmd);
 
                     bool isLast = (iter == _iterations - 1);
@@ -268,9 +261,9 @@ namespace CoreGMIC.Heavy
                     }
                     else
                     {
-                        _material.SetTexture("_BaseTex", curr);
-                        _material.SetFloat("_Opacity", _opacity);
-                        Graphics.Blit(canvasRt, iterOut, _material, 3);
+                        Material.SetTexture("_BaseTex", curr);
+                        Material.SetFloat("_Opacity", _opacity);
+                        Graphics.Blit(canvasRt, iterOut, Material, 3);
                     }
 
                     curr = iterOut;
@@ -278,30 +271,16 @@ namespace CoreGMIC.Heavy
             }
             finally
             {
-                ReleaseTemp(rtA);
-                ReleaseTemp(rtB);
-                ReleaseTemp(blurA);
-                ReleaseTemp(blurB);
-                ReleaseTemp(canvasRt);
+                GpuUtils.ReleaseTemp(rtA);
+                GpuUtils.ReleaseTemp(rtB);
+                GpuUtils.ReleaseTemp(blurA);
+                GpuUtils.ReleaseTemp(blurB);
+                GpuUtils.ReleaseTemp(canvasRt);
             }
         }
 
-        public void ResetParameters()
+        public override void Dispose()
         {
-            foreach (FilterParameter param in _parameters)
-            {
-                param.Reset();
-            }
-        }
-
-        public void Dispose()
-        {
-            if (_material != null)
-            {
-                UnityEngine.Object.Destroy(_material);
-                _material = null;
-            }
-
             if (_cmd != null)
             {
                 _cmd.Release();
@@ -309,14 +288,9 @@ namespace CoreGMIC.Heavy
             }
 
             ReleaseComputeBuffers();
-
-            if (_dummyOffsetBuffer != null)
-            {
-                _dummyOffsetBuffer.Release();
-                _dummyOffsetBuffer = null;
-            }
-
+            GpuUtils.ReleaseBuffer(ref _dummyOffsetBuffer);
             _stepCompute = null;
+            base.Dispose();
         }
 
         private void UpdatePlacementHistory(int quadsPerIter, int iterations, float halfSizePx, int width, int height)
@@ -389,35 +363,9 @@ namespace CoreGMIC.Heavy
 
         private void ReleaseComputeBuffers()
         {
-            if (_offsetsBuffer != null)
-            {
-                _offsetsBuffer.Release();
-                _offsetsBuffer = null;
-            }
-
-            if (_historyBuffer != null)
-            {
-                _historyBuffer.Release();
-                _historyBuffer = null;
-            }
-
+            GpuUtils.ReleaseBuffer(ref _offsetsBuffer);
+            GpuUtils.ReleaseBuffer(ref _historyBuffer);
             _allocatedTotalQuads = -1;
-        }
-
-        private static RenderTexture GetTempRt(int width, int height, RenderTextureFormat format)
-        {
-            RenderTexture rt = RenderTexture.GetTemporary(width, height, 0, format, RenderTextureReadWrite.Default);
-            rt.filterMode = FilterMode.Bilinear;
-            rt.wrapMode = TextureWrapMode.Clamp;
-            return rt;
-        }
-
-        private static void ReleaseTemp(RenderTexture rt)
-        {
-            if (rt != null)
-            {
-                RenderTexture.ReleaseTemporary(rt);
-            }
         }
     }
 }

@@ -6,28 +6,6 @@ Shader "CoreGMIC/Cubism"
     }
 
     CGINCLUDE
-    #include "UnityCG.cginc"
-
-    struct appdata
-    {
-        float4 vertex : POSITION;
-        float2 uv : TEXCOORD0;
-    };
-
-    struct v2f
-    {
-        float4 pos : SV_POSITION;
-        float2 uv : TEXCOORD0;
-    };
-
-    v2f vert(appdata v)
-    {
-        v2f o;
-        o.pos = UnityObjectToClipPos(v.vertex);
-        o.uv = v.uv;
-        return o;
-    }
-
     sampler2D _MainTex;
     float4 _MainTex_TexelSize;
     sampler2D _BaseTex;
@@ -41,15 +19,8 @@ Shader "CoreGMIC/Cubism"
     float _Smoothness;
     float _Opacity;
 
-    uint HashU32(uint x)
-    {
-        x ^= x >> 16;
-        x *= 0x7FEB352Du;
-        x ^= x >> 15;
-        x *= 0x846CA68Bu;
-        x ^= x >> 16;
-        return x;
-    }
+    #define GMIC_USE_HASH 1
+    #include "GmicCommon.cginc"
     ENDCG
 
     SubShader
