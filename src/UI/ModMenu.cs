@@ -23,6 +23,7 @@ namespace CoreGMIC.UI
         private static Menu _menuRef;
         private static UnityEngine.UI.MenuButton _disablePlayerButton;
         private static UnityEngine.UI.MenuButton _disableTiktikButton;
+        private static UnityEngine.UI.MenuButton _noFastNoiseButton;
         private static UnityEngine.UI.MenuButton _enableExperimentalButton;
         private static bool _isUpdatingUi;
         private static readonly List<IFilter> _filterSlots = new List<IFilter>();
@@ -255,16 +256,47 @@ namespace CoreGMIC.UI
                 return;
             }
 
-            GameObject titleGo = screen.title.gameObject;
+            GameObject screenGo = screen.gameObject;
+            RectTransform screenRt = screenGo.GetComponent<RectTransform>();
+            Canvas canvas = screen.GetComponentInParent<Canvas>();
 
-            ContentArea playerArea = new ContentArea(
-                titleGo,
+            float rightEdgeX = 920f;
+            float centerY = 0f;
+            if (canvas != null && screenRt != null)
+            {
+                RectTransform canvasRt = canvas.GetComponent<RectTransform>();
+                Vector3 worldRightCenter = canvasRt.TransformPoint(new Vector3(canvasRt.rect.xMax, canvasRt.rect.center.y, 0f));
+                Vector3 localRightCenter = screenRt.InverseTransformPoint(worldRightCenter);
+                rightEdgeX = localRightCenter.x;
+                centerY = localRightCenter.y;
+            }
+
+            GameObject panelGo = new GameObject("CoreGMIC_CornerPanel");
+            panelGo.transform.SetParent(screenGo.transform, false);
+
+            RectTransform panelRt = panelGo.AddComponent<RectTransform>();
+            panelRt.anchorMin = new Vector2(0.5f, 0.5f);
+            panelRt.anchorMax = new Vector2(0.5f, 0.5f);
+            panelRt.pivot = new Vector2(1f, 0.5f);
+            panelRt.sizeDelta = new Vector2(560f, 240f);
+            panelRt.anchoredPosition = new Vector2(rightEdgeX - 120f, centerY);
+
+            VerticalLayoutGroup vlg = panelGo.AddComponent<VerticalLayoutGroup>();
+            vlg.childAlignment = TextAnchor.MiddleRight;
+            vlg.spacing = 12f;
+            vlg.childControlWidth = true;
+            vlg.childControlHeight = false;
+            vlg.childForceExpandWidth = false;
+            vlg.childForceExpandHeight = false;
+
+            ContentArea cornerArea = new ContentArea(
+                panelGo,
                 new SingleContentLayout(new AnchoredPosition(
-                    new Vector2(0.5f, 0.5f),
-                    new Vector2(0.5f, 0.5f),
-                    new Vector2(780f, 18f))));
+                    new Vector2(1f, 0.5f),
+                    new Vector2(1f, 0.5f),
+                    Vector2.zero)));
 
-            playerArea.AddMenuButton(
+            cornerArea.AddMenuButton(
                 "DisablePlayerButton",
                 new MenuButtonConfig
                 {
@@ -282,14 +314,7 @@ namespace CoreGMIC.UI
 
             ConfigureCornerButton(_disablePlayerButton);
 
-            ContentArea tiktikArea = new ContentArea(
-                titleGo,
-                new SingleContentLayout(new AnchoredPosition(
-                    new Vector2(0.5f, 0.5f),
-                    new Vector2(0.5f, 0.5f),
-                    new Vector2(780f, -42f))));
-
-            tiktikArea.AddMenuButton(
+            cornerArea.AddMenuButton(
                 "DisableTiktikButton",
                 new MenuButtonConfig
                 {
@@ -307,14 +332,28 @@ namespace CoreGMIC.UI
 
             ConfigureCornerButton(_disableTiktikButton);
 
-            ContentArea experimentalArea = new ContentArea(
-                titleGo,
-                new SingleContentLayout(new AnchoredPosition(
-                    new Vector2(0.5f, 0.5f),
-                    new Vector2(0.5f, 0.5f),
-                    new Vector2(780f, -102f))));
+            cornerArea.AddMenuButton(
+                "NoFastNoiseButton",
+                new MenuButtonConfig
+                {
+                    Label = GetNoFastNoiseLabel(),
+                    CancelAction = _ => _menuRef?.CancelAction?.Invoke(),
+                    SubmitAction = _ =>
+                    {
+                        if (CoreGMICMod.Settings != null)
+                        {
+                            CoreGMICMod.Settings.NoFastNoise = !CoreGMICMod.Settings.NoFastNoise;
+                        }
+                        UpdateCornerExclusionLabels();
+                    },
+                    Style = MenuButtonStyle.VanillaStyle,
+                    Proceed = false
+                },
+                out _noFastNoiseButton);
 
-            experimentalArea.AddMenuButton(
+            ConfigureCornerButton(_noFastNoiseButton);
+
+            cornerArea.AddMenuButton(
                 "EnableExperimentalButton",
                 new MenuButtonConfig
                 {
@@ -340,11 +379,74 @@ namespace CoreGMIC.UI
                 return;
             }
 
+            ContentSizeFitter btnFitter = button.GetComponent<ContentSizeFitter>();
+            if (btnFitter != null)
+            {
+                btnFitter.enabled = false;
+            }
+
+            HorizontalLayoutGroup hlg = button.GetComponent<HorizontalLayoutGroup>();
+            if (hlg != null)
+            {
+                hlg.childAlignment = TextAnchor.MiddleRight;
+            }
+
+            RectTransform btnRt = button.GetComponent<RectTransform>();
+            if (btnRt != null)
+            {
+                btnRt.sizeDelta = new Vector2(440f, 44f);
+            }
+
+            LayoutElement layoutElem = button.GetComponent<LayoutElement>() ?? button.gameObject.AddComponent<LayoutElement>();
+            layoutElem.minHeight = 44f;
+            layoutElem.preferredHeight = 44f;
+
             Text label = button.GetComponentInChildren<Text>(true);
             if (label != null)
             {
+                ContentSizeFitter lblFitter = label.GetComponent<ContentSizeFitter>();
+                if (lblFitter != null)
+                {
+                    lblFitter.enabled = false;
+                }
+
+                RectTransform lblRt = label.GetComponent<RectTransform>();
+                if (lblRt != null)
+                {
+                    lblRt.anchorMin = Vector2.zero;
+                    lblRt.anchorMax = Vector2.one;
+                    lblRt.offsetMin = Vector2.zero;
+                    lblRt.offsetMax = Vector2.zero;
+                }
+
                 label.fontSize = 26;
-                label.alignment = TextAnchor.MiddleRight;
+                label.alignment = TextAnchor.MiddleCenter;
+                label.horizontalOverflow = HorizontalWrapMode.Overflow;
+            }
+
+            UpdateButtonPreferredWidth(button);
+        }
+
+        private static void UpdateButtonPreferredWidth(UnityEngine.UI.MenuButton button)
+        {
+            if (button == null)
+            {
+                return;
+            }
+
+            Text label = button.GetComponentInChildren<Text>(true);
+            LayoutElement layoutElem = button.GetComponent<LayoutElement>() ?? button.gameObject.AddComponent<LayoutElement>();
+            if (label != null)
+            {
+                float targetWidth = label.preferredWidth + 24f;
+                layoutElem.minWidth = targetWidth;
+                layoutElem.preferredWidth = targetWidth;
+            }
+
+            RectTransform rt = button.GetComponent<RectTransform>();
+            if (rt != null)
+            {
+                LayoutRebuilder.MarkLayoutForRebuild(rt);
             }
         }
 
@@ -357,6 +459,7 @@ namespace CoreGMIC.UI
                 {
                     label.text = GetDisablePlayerLabel();
                 }
+                UpdateButtonPreferredWidth(_disablePlayerButton);
             }
 
             if (_disableTiktikButton != null)
@@ -366,6 +469,17 @@ namespace CoreGMIC.UI
                 {
                     label.text = GetDisableTiktikLabel();
                 }
+                UpdateButtonPreferredWidth(_disableTiktikButton);
+            }
+
+            if (_noFastNoiseButton != null)
+            {
+                Text label = _noFastNoiseButton.GetComponentInChildren<Text>(true);
+                if (label != null)
+                {
+                    label.text = GetNoFastNoiseLabel();
+                }
+                UpdateButtonPreferredWidth(_noFastNoiseButton);
             }
 
             if (_enableExperimentalButton != null)
@@ -375,6 +489,7 @@ namespace CoreGMIC.UI
                 {
                     label.text = GetEnableExperimentalLabel();
                 }
+                UpdateButtonPreferredWidth(_enableExperimentalButton);
             }
         }
 
@@ -386,6 +501,13 @@ namespace CoreGMIC.UI
         private static string GetDisableTiktikLabel()
         {
             return EntityExclusionManager.DisableTiktik ? "Disable Tiktik: On" : "Disable Tiktik: Off";
+        }
+
+        private static string GetNoFastNoiseLabel()
+        {
+            return (CoreGMICMod.Settings != null && CoreGMICMod.Settings.NoFastNoise)
+                ? "No FastNoise: On"
+                : "No FastNoise: Off";
         }
 
         private static string GetEnableExperimentalLabel()

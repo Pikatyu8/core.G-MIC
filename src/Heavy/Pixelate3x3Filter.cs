@@ -10,8 +10,8 @@ namespace CoreGMIC.Heavy
         private int _blockSize = 3;
         private readonly List<FilterParameter> _parameters = new List<FilterParameter>();
 
-        public string Id => "test_pixelate_3x3";
-        public string DisplayName => "Test: Pixelate";
+        public string Id => "fx_pixelate";
+        public string DisplayName => "Pixelate";
         public string Description => "Spatial filter merging NxN pixel blocks into one color.";
         public FilterCategory Category => FilterCategory.Standard;
         public bool IsAvailable => _material != null;

@@ -69,7 +69,9 @@ namespace CoreGMIC.Core
 
             IFilter activeFilter = FilterManager.ActiveFilter;
             bool filterActive = !ShouldBypassFilters() && FilterManager.IsEnabled && activeFilter != null && activeFilter.IsAvailable;
-            UpdateFastNoiseSuppression(filterActive && activeFilter.Id == "fx_vector_painting");
+            bool suppressNoise = (CoreGMICMod.Settings != null && CoreGMICMod.Settings.NoFastNoise) ||
+                                 (filterActive && activeFilter.Id == "fx_vector_painting");
+            UpdateFastNoiseSuppression(suppressNoise);
 
             if (!filterActive || !EntityExclusionManager.HasAnyExclusion)
             {
