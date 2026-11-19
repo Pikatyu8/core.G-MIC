@@ -115,6 +115,7 @@ namespace CoreGMIC.Core
 
         public static void Unload()
         {
+            GpuOpsResources.Reset();
             _shaders.Clear();
             _computeShaders.Clear();
 

@@ -1,0 +1,173 @@
+using System;
+using UnityEngine;
+
+namespace CoreGMIC.Core
+{
+    public sealed class GpuStatsOptions
+    {
+        public bool RgbMode { get; set; } = false;
+        public int ClipDivisor { get; set; } = 0;
+        public bool ZeroBasedCdf { get; set; } = false;
+        public float TemporalAlpha { get; set; } = 1f;
+        public bool ResetHistory { get; set; } = false;
+    }
+
+    public sealed class GpuStats : IDisposable
+    {
+        private static readonly GpuStatsOptions DefaultOptions = new GpuStatsOptions();
+
+        private ComputeShader _compute;
+        private int _kernelClear;
+        private int _kernelReduceMinMax;
+        private int _kernelSmoothMinMax;
+        private int _kernelHistogram;
+        private int _kernelBuildCdf;
+
+        private ComputeBuffer _statsBuf;
+        private ComputeBuffer _histBuf;
+        private ComputeBuffer _temporalMinMaxBuf;
+        private ComputeBuffer _cdfHistoryBuf;
+        private ComputeBuffer _cdfBuffer;
+        private RenderTexture _cdfTex;
+
+        private bool _hasMinMaxHistory;
+        private bool _hasCdfHistory;
+
+        public bool IsAvailable => _compute != null && SystemInfo.supportsComputeShaders;
+        public ComputeBuffer StatsBuffer => _statsBuf;
+        public ComputeBuffer CdfBuffer => _cdfBuffer;
+        public RenderTexture CdfTexture => _cdfTex;
+
+        private GpuStats(ComputeShader compute)
+        {
+            _compute = compute;
+            _kernelClear = _compute.FindKernel("CSClear");
+            _kernelReduceMinMax = _compute.FindKernel("CSReduceMinMax");
+            _kernelSmoothMinMax = _compute.FindKernel("CSSmoothMinMax");
+            _kernelHistogram = _compute.FindKernel("CSHistogram");
+            _kernelBuildCdf = _compute.FindKernel("CSBuildCdf");
+
+            _statsBuf = new ComputeBuffer(2, sizeof(uint));
+            _histBuf = new ComputeBuffer(256, sizeof(uint));
+            _temporalMinMaxBuf = new ComputeBuffer(1, sizeof(float) * 2);
+            _temporalMinMaxBuf.SetData(new[] { Vector2.zero });
+            _cdfHistoryBuf = new ComputeBuffer(256, sizeof(float) * 4);
+            _cdfBuffer = new ComputeBuffer(256, sizeof(float));
+            _cdfTex = GpuUtils.CreateRt(256, 1, RenderTextureFormat.ARGBFloat, FilterMode.Bilinear, RenderTextureReadWrite.Linear, randomWrite: true);
+        }
+
+        public static bool TryCreate(out GpuStats stats)
+        {
+            if (!SystemInfo.supportsComputeShaders)
+            {
+                stats = null;
+                return false;
+            }
+
+            ComputeShader cs = ShaderManager.GetComputeShader("GmicStats");
+            if (cs == null)
+            {
+                stats = null;
+                return false;
+            }
+
+            stats = new GpuStats(cs);
+            return true;
+        }
+
+        public void ComputeMinMax(RenderTexture input, bool rgbMode = false, float temporalAlpha = 1f, bool resetHistory = false)
+        {
+            if (!IsAvailable || input == null)
+            {
+                return;
+            }
+
+            int w = input.width;
+            int h = input.height;
+            int groupsX = (w + 15) / 16;
+            int groupsY = (h + 15) / 16;
+
+            _compute.SetInt("_Width", w);
+            _compute.SetInt("_Height", h);
+            _compute.SetInt("_RgbMode", rgbMode ? 1 : 0);
+
+            _compute.SetBuffer(_kernelClear, "_StatsBuf", _statsBuf);
+            _compute.SetBuffer(_kernelClear, "_HistBuf", _histBuf);
+            _compute.Dispatch(_kernelClear, 1, 1, 1);
+
+            _compute.SetTexture(_kernelReduceMinMax, "_InputTex", input);
+            _compute.SetBuffer(_kernelReduceMinMax, "_StatsBuf", _statsBuf);
+            _compute.Dispatch(_kernelReduceMinMax, groupsX, groupsY, 1);
+
+            if (temporalAlpha < 0.9999f)
+            {
+                bool doReset = resetHistory || !_hasMinMaxHistory;
+                _compute.SetInt("_ResetHistory", doReset ? 1 : 0);
+                _compute.SetFloat("_TemporalAlpha", Mathf.Clamp01(temporalAlpha));
+                _compute.SetBuffer(_kernelSmoothMinMax, "_StatsBuf", _statsBuf);
+                _compute.SetBuffer(_kernelSmoothMinMax, "_TemporalMinMax", _temporalMinMaxBuf);
+                _compute.Dispatch(_kernelSmoothMinMax, 1, 1, 1);
+                _hasMinMaxHistory = true;
+            }
+        }
+
+        public void ComputeHistogramCdf(RenderTexture input, GpuStatsOptions options = null)
+        {
+            if (!IsAvailable || input == null)
+            {
+                return;
+            }
+
+            options ??= DefaultOptions;
+            ComputeMinMax(input, options.RgbMode);
+
+            int groupsX = (input.width + 15) / 16;
+            int groupsY = (input.height + 15) / 16;
+
+            _compute.SetTexture(_kernelHistogram, "_InputTex", input);
+            _compute.SetBuffer(_kernelHistogram, "_StatsBuf", _statsBuf);
+            _compute.SetBuffer(_kernelHistogram, "_HistBuf", _histBuf);
+            _compute.Dispatch(_kernelHistogram, groupsX, groupsY, 1);
+
+            bool useTemporal = options.TemporalAlpha < 0.9999f;
+            bool doReset = options.ResetHistory || !_hasCdfHistory;
+
+            _compute.SetInt("_ClipDivisor", Mathf.Max(0, options.ClipDivisor));
+            _compute.SetInt("_ZeroBasedCdf", options.ZeroBasedCdf ? 1 : 0);
+            _compute.SetInt("_UseTemporal", useTemporal ? 1 : 0);
+            _compute.SetInt("_ResetHistory", doReset ? 1 : 0);
+            _compute.SetFloat("_TemporalAlpha", Mathf.Clamp01(options.TemporalAlpha));
+
+            _compute.SetBuffer(_kernelBuildCdf, "_StatsBuf", _statsBuf);
+            _compute.SetBuffer(_kernelBuildCdf, "_HistBuf", _histBuf);
+            _compute.SetBuffer(_kernelBuildCdf, "_CdfHistory", _cdfHistoryBuf);
+            _compute.SetBuffer(_kernelBuildCdf, "_CdfBuffer", _cdfBuffer);
+            _compute.SetTexture(_kernelBuildCdf, "_CdfTex", _cdfTex);
+            _compute.Dispatch(_kernelBuildCdf, 1, 1, 1);
+
+            if (useTemporal)
+            {
+                _hasCdfHistory = true;
+            }
+        }
+
+        public void ResetHistory()
+        {
+            _hasMinMaxHistory = false;
+            _hasCdfHistory = false;
+        }
+
+        public void Dispose()
+        {
+            GpuUtils.ReleaseBuffer(ref _statsBuf);
+            GpuUtils.ReleaseBuffer(ref _histBuf);
+            GpuUtils.ReleaseBuffer(ref _temporalMinMaxBuf);
+            GpuUtils.ReleaseBuffer(ref _cdfHistoryBuf);
+            GpuUtils.ReleaseBuffer(ref _cdfBuffer);
+            GpuUtils.ReleaseRt(ref _cdfTex);
+            _hasMinMaxHistory = false;
+            _hasCdfHistory = false;
+            _compute = null;
+        }
+    }
+}

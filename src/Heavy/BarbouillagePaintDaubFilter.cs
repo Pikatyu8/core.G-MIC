@@ -7,18 +7,24 @@ namespace CoreGMIC.Heavy
     public class BarbouillagePaintDaubFilter : FilterBase
     {
         private const int PlasmaTextureSize = 257; // 2^8 + 1 for Diamond-Square
-        private const int HistogramBufferCount = 258; // [0]=min, [1]=max, [2..257]=hist[0..255]
 
-        private ComputeShader _histogramCompute;
-        private int _kernelClear;
-        private int _kernelReduceMinMax;
-        private int _kernelHistogram;
-        private int _kernelBuildCdf;
+        private static readonly GpuStatsOptions LoopHistOptions = new GpuStatsOptions
+        {
+            RgbMode = true,
+            ClipDivisor = 6,
+            ZeroBasedCdf = true,
+            TemporalAlpha = 1f
+        };
 
-        private ComputeBuffer _statsHistBuffer;
-        private ComputeBuffer _cdfHistoryBuffer;
-        private bool _hasFinalHistory;
-        private RenderTexture _cdfRt;
+        private static readonly GpuStatsOptions FinalHistOptions = new GpuStatsOptions
+        {
+            RgbMode = true,
+            ClipDivisor = 6,
+            ZeroBasedCdf = true,
+            TemporalAlpha = 0.15f
+        };
+
+        private GpuStats _stats;
         private Texture2D _plasmaTexture;
 
         private int _iterations = 2;
@@ -35,7 +41,7 @@ namespace CoreGMIC.Heavy
         public override string DisplayName => "Barbouillage Daub";
         public override string Description => "Painterly engraving and anisotropic paint-daub stylization (GPU Compute equalize + LIC).";
         public override FilterCategory Category => FilterCategory.Heavy;
-        public override bool IsAvailable => base.IsAvailable && _histogramCompute != null && SystemInfo.supportsComputeShaders;
+        public override bool IsAvailable => base.IsAvailable && _stats != null && _stats.IsAvailable;
 
         public BarbouillagePaintDaubFilter()
         {
@@ -121,22 +127,11 @@ namespace CoreGMIC.Heavy
 
         public override void Initialize()
         {
-            if (!TryLoadComputeShader("GmicHistogram", out _histogramCompute) ||
-                !TryCreateMaterial("CoreGMIC/Barbouillage"))
+            if (!TryCreateMaterial("CoreGMIC/Barbouillage") ||
+                !GpuStats.TryCreate(out _stats))
             {
-                _histogramCompute = null;
                 return;
             }
-
-            _kernelClear = _histogramCompute.FindKernel("CSClear");
-            _kernelReduceMinMax = _histogramCompute.FindKernel("CSReduceMinMax");
-            _kernelHistogram = _histogramCompute.FindKernel("CSHistogram");
-            _kernelBuildCdf = _histogramCompute.FindKernel("CSBuildCdf");
-
-            _statsHistBuffer = new ComputeBuffer(HistogramBufferCount, sizeof(uint));
-            _cdfHistoryBuffer = new ComputeBuffer(256, sizeof(float) * 4);
-            _hasFinalHistory = false;
-            _cdfRt = GpuUtils.CreateRt(256, 1, RenderTextureFormat.ARGBFloat, FilterMode.Bilinear, RenderTextureReadWrite.Linear, randomWrite: true);
 
             RebuildPlasmaTexture();
         }
@@ -180,9 +175,9 @@ namespace CoreGMIC.Heavy
                 {
                     Graphics.Blit(edgeCurr, edgeNext, Material, 1);
 
-                    ComputeHistogramCdf(edgeNext, isFinalPass: false);
+                    _stats.ComputeHistogramCdf(edgeNext, LoopHistOptions);
                     RenderTexture normOut = (edgeNext == rtA) ? rtB : rtA;
-                    Material.SetTexture("_CdfTex", _cdfRt);
+                    Material.SetTexture("_CdfTex", _stats.CdfTexture);
                     Material.SetFloat("_DoEqualize", 1f);
                     Material.SetFloat("_FinalPass", 0f);
                     Graphics.Blit(edgeNext, normOut, Material, 2);
@@ -246,8 +241,8 @@ namespace CoreGMIC.Heavy
                 }
 
                 // 5. Final normalize [0, 1] + optional histogram equalize (Pass 2).
-                ComputeHistogramCdf(paintCurr, isFinalPass: true);
-                Material.SetTexture("_CdfTex", _cdfRt);
+                _stats.ComputeHistogramCdf(paintCurr, FinalHistOptions);
+                Material.SetTexture("_CdfTex", _stats.CdfTexture);
                 Material.SetFloat("_DoEqualize", _equalize ? 1f : 0f);
                 Material.SetFloat("_FinalPass", 1f);
                 Graphics.Blit(paintCurr, destination, Material, 2);
@@ -262,50 +257,18 @@ namespace CoreGMIC.Heavy
             }
         }
 
-        public override void Dispose()
+        public override void ResetParameters()
         {
-            GpuUtils.ReleaseBuffer(ref _statsHistBuffer);
-            GpuUtils.ReleaseBuffer(ref _cdfHistoryBuffer);
-            _hasFinalHistory = false;
-            GpuUtils.ReleaseRt(ref _cdfRt);
-            GpuUtils.DestroyObject(ref _plasmaTexture);
-            _histogramCompute = null;
-            base.Dispose();
+            base.ResetParameters();
+            _stats?.ResetHistory();
         }
 
-        private void ComputeHistogramCdf(RenderTexture input, bool isFinalPass)
+        public override void Dispose()
         {
-            int w = input.width;
-            int h = input.height;
-            int groupsX = (w + 15) / 16;
-            int groupsY = (h + 15) / 16;
-
-            _histogramCompute.SetInt("_Width", w);
-            _histogramCompute.SetInt("_Height", h);
-            _histogramCompute.SetInt("_IsFinalPass", isFinalPass ? 1 : 0);
-            _histogramCompute.SetInt("_ResetHistory", !_hasFinalHistory ? 1 : 0);
-            _histogramCompute.SetFloat("_TemporalAlpha", 0.15f);
-
-            _histogramCompute.SetBuffer(_kernelClear, "_StatsAndHist", _statsHistBuffer);
-            _histogramCompute.Dispatch(_kernelClear, 2, 1, 1);
-
-            _histogramCompute.SetTexture(_kernelReduceMinMax, "_InputTex", input);
-            _histogramCompute.SetBuffer(_kernelReduceMinMax, "_StatsAndHist", _statsHistBuffer);
-            _histogramCompute.Dispatch(_kernelReduceMinMax, groupsX, groupsY, 1);
-
-            _histogramCompute.SetTexture(_kernelHistogram, "_InputTex", input);
-            _histogramCompute.SetBuffer(_kernelHistogram, "_StatsAndHist", _statsHistBuffer);
-            _histogramCompute.Dispatch(_kernelHistogram, groupsX, groupsY, 1);
-
-            _histogramCompute.SetBuffer(_kernelBuildCdf, "_StatsAndHist", _statsHistBuffer);
-            _histogramCompute.SetBuffer(_kernelBuildCdf, "_CdfHistory", _cdfHistoryBuffer);
-            _histogramCompute.SetTexture(_kernelBuildCdf, "_CdfTex", _cdfRt);
-            _histogramCompute.Dispatch(_kernelBuildCdf, 1, 1, 1);
-
-            if (isFinalPass)
-            {
-                _hasFinalHistory = true;
-            }
+            _stats?.Dispose();
+            _stats = null;
+            GpuUtils.DestroyObject(ref _plasmaTexture);
+            base.Dispose();
         }
 
         private void RebuildPlasmaTexture()

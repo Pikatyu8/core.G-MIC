@@ -10,8 +10,6 @@
 #pragma kernel CSAreaHist
 #pragma kernel CSAreaFindMedian
 #pragma kernel CSBuildHoleSeeds
-#pragma kernel CSReduceMinMax
-#pragma kernel CSSmoothMinMax
 
 Texture2D<float4> _InputTex;
 SamplerState sampler_InputTex;
@@ -35,7 +33,6 @@ float _EdgeSimplicity;
 float _TemporalAlpha;
 int _ResetHistory;
 int _ResetAreaHistory;
-int _ResetMinMaxHistory;
 
 groupshared float3 gsSamples[256];
 groupshared float gsMinDist[256];
@@ -46,8 +43,6 @@ groupshared uint gsAccum[128]; // 32 * 4
 groupshared uint gsColor[256];
 groupshared uint gsParent[256];
 groupshared uint gsHist[64];
-groupshared uint gsMin[256];
-groupshared uint gsMax[256];
 
 uint GsFind(uint x)
 {
@@ -509,61 +504,5 @@ void CSBuildHoleSeeds(uint3 dtid : SV_DispatchThreadID)
     {
         float2 uv = (float2(dtid.xy) + 0.5) / float2((float)_Width, (float)_Height);
         _JfaOutTex[dtid.xy] = float4(uv.x, uv.y, 0.0, 1.0);
-    }
-}
-
-[numthreads(16, 16, 1)]
-void CSReduceMinMax(uint3 dtid : SV_DispatchThreadID, uint gi : SV_GroupIndex)
-{
-    if (dtid.x < (uint)_Width && dtid.y < (uint)_Height)
-    {
-        float3 rgb = clamp(_InputTex[dtid.xy].rgb, 0.0, 1e6);
-        float cMin = min(rgb.r, min(rgb.g, rgb.b));
-        float cMax = max(rgb.r, max(rgb.g, rgb.b));
-        gsMin[gi] = asuint(cMin);
-        gsMax[gi] = asuint(cMax);
-    }
-    else
-    {
-        gsMin[gi] = 0x7F7FFFFFu;
-        gsMax[gi] = 0u;
-    }
-
-    GroupMemoryBarrierWithGroupSync();
-
-    [unroll]
-    for (uint stride = 128u; stride > 0u; stride >>= 1u)
-    {
-        if (gi < stride)
-        {
-            gsMin[gi] = min(gsMin[gi], gsMin[gi + stride]);
-            gsMax[gi] = max(gsMax[gi], gsMax[gi + stride]);
-        }
-        GroupMemoryBarrierWithGroupSync();
-    }
-
-    if (gi == 0u)
-    {
-        InterlockedMin(_StatsBuf[0], gsMin[0]);
-        InterlockedMax(_StatsBuf[1], gsMax[0]);
-    }
-}
-
-[numthreads(1, 1, 1)]
-void CSSmoothMinMax()
-{
-    float rawMin = asfloat(_StatsBuf[0]);
-    float rawMax = asfloat(_StatsBuf[1]);
-
-    if (_ResetMinMaxHistory > 0)
-    {
-        _TemporalState[0].xy = float2(rawMin, rawMax);
-    }
-    else
-    {
-        float2 smoothed = lerp(_TemporalState[0].xy, float2(rawMin, rawMax), _TemporalAlpha);
-        _TemporalState[0].xy = smoothed;
-        _StatsBuf[0] = asuint(smoothed.x);
-        _StatsBuf[1] = asuint(smoothed.y);
     }
 }

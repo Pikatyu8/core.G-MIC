@@ -67,6 +67,8 @@ namespace CoreGMIC
             FilterManager.Register(new CubismFilter());
             FilterManager.Register(new CutoutFilter());
             FilterManager.Register(new VectorPaintingFilter());
+            FilterManager.Register(new ArrayColorFilter());
+            FilterManager.Register(new EdgesFilter());
         }
 
         private void OnGameCamerasSceneInit(On.GameCameras.orig_SceneInit orig, GameCameras self)

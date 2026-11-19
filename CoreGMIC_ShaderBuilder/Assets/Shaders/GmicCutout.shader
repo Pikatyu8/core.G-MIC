@@ -19,7 +19,6 @@ Shader "CoreGMIC/Cutout"
 
     int _MedianSize;
     int _NumLevels;
-    float _JfaStep;
 
     float SortAndPickMedian(inout float arr[10], int count)
     {
@@ -162,52 +161,7 @@ Shader "CoreGMIC/Cutout"
             ENDCG
         }
 
-        // Pass 3: Jump Flooding Step for Hole Inpainting
-        Pass
-        {
-            CGPROGRAM
-            #pragma target 4.5
-            #pragma vertex vert
-            #pragma fragment fragJfaStep
-
-            float4 fragJfaStep(v2f i) : SV_Target
-            {
-                float2 stepUv = _MainTex_TexelSize.xy * _JfaStep;
-                float2 sizePx = _MainTex_TexelSize.zw;
-
-                float4 best = float4(0.0, 0.0, 0.0, 0.0);
-                float bestDistSq = 1e20;
-
-                [unroll]
-                for (int dy = -1; dy <= 1; dy++)
-                {
-                    [unroll]
-                    for (int dx = -1; dx <= 1; dx++)
-                    {
-                        float2 suv = i.uv + float2((float)dx, (float)dy) * stepUv;
-                        if (suv.x < 0.0 || suv.x > 1.0 || suv.y < 0.0 || suv.y > 1.0)
-                            continue;
-
-                        float4 cand = tex2Dlod(_MainTex, float4(suv, 0.0, 0.0));
-                        if (cand.a < 0.5)
-                            continue;
-
-                        float2 diffPx = (i.uv - cand.xy) * sizePx;
-                        float d2 = dot(diffPx, diffPx);
-                        if (d2 < bestDistSq)
-                        {
-                            bestDistSq = d2;
-                            best = cand;
-                        }
-                    }
-                }
-
-                return best;
-            }
-            ENDCG
-        }
-
-        // Pass 4: Resolve Inpainted Cutout Image
+        // Pass 3: Resolve Inpainted Cutout Image
         Pass
         {
             CGPROGRAM

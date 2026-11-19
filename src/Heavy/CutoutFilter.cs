@@ -8,9 +8,9 @@ namespace CoreGMIC.Heavy
         private const int MaxLevels = 32;
         private const int KMeansIters = 6;
         private const float TemporalAlpha = 0.15f;
-        private static readonly int[] JfaSteps = { 64, 32, 16, 8, 4, 2, 1 };
 
         private ComputeShader _compute;
+        private GpuStats _stats;
 
         private int _kernelInitCentroids;
         private int _kernelClearKMeans;
@@ -24,8 +24,6 @@ namespace CoreGMIC.Heavy
         private int _kernelAreaHist;
         private int _kernelAreaFindMedian;
         private int _kernelBuildHoleSeeds;
-        private int _kernelReduceMinMax;
-        private int _kernelSmoothMinMax;
 
         private ComputeBuffer _targetCentroidsBuffer;
         private ComputeBuffer _centroidsBuffer;
@@ -52,7 +50,8 @@ namespace CoreGMIC.Heavy
         public override string DisplayName => "Cutout";
         public override string Description => "Reduces colors into clean paper-cutout shapes with small-island removal.";
         public override FilterCategory Category => FilterCategory.Standard;
-        public override bool IsAvailable => base.IsAvailable && _compute != null && SystemInfo.supportsComputeShaders;
+        public override bool IsAvailable =>
+            base.IsAvailable && GpuJfa.IsAvailable && _compute != null && SystemInfo.supportsComputeShaders && _stats != null && _stats.IsAvailable;
 
         public CutoutFilter()
         {
@@ -95,7 +94,8 @@ namespace CoreGMIC.Heavy
         public override void Initialize()
         {
             if (!TryLoadComputeShader("GmicCutout", out _compute) ||
-                !TryCreateMaterial("CoreGMIC/Cutout"))
+                !TryCreateMaterial("CoreGMIC/Cutout") ||
+                !GpuStats.TryCreate(out _stats))
             {
                 _compute = null;
                 return;
@@ -113,8 +113,6 @@ namespace CoreGMIC.Heavy
             _kernelAreaHist = _compute.FindKernel("CSAreaHist");
             _kernelAreaFindMedian = _compute.FindKernel("CSAreaFindMedian");
             _kernelBuildHoleSeeds = _compute.FindKernel("CSBuildHoleSeeds");
-            _kernelReduceMinMax = _compute.FindKernel("CSReduceMinMax");
-            _kernelSmoothMinMax = _compute.FindKernel("CSSmoothMinMax");
 
             _targetCentroidsBuffer = new ComputeBuffer(MaxLevels, sizeof(float) * 4);
             _centroidsBuffer = new ComputeBuffer(MaxLevels, sizeof(float) * 4);
@@ -227,15 +225,7 @@ namespace CoreGMIC.Heavy
                     _compute.SetTexture(_kernelBuildHoleSeeds, "_JfaOutTex", jfaA);
                     _compute.Dispatch(_kernelBuildHoleSeeds, groupsX, groupsY, 1);
 
-                    RenderTexture jfaSrc = jfaA;
-                    RenderTexture jfaDst = jfaB;
-                    for (int s = 0; s < JfaSteps.Length; s++)
-                    {
-                        Material.SetFloat("_JfaStep", JfaSteps[s]);
-                        Graphics.Blit(jfaSrc, jfaDst, Material, 3);
-                        jfaSrc = jfaDst;
-                        jfaDst = (jfaSrc == jfaA) ? jfaB : jfaA;
-                    }
+                    RenderTexture jfaSrc = GpuJfa.Run(jfaA, jfaB, maxStep: 64);
 
                     Material.SetTexture("_JfaTex", jfaSrc);
                     Material.SetTexture("_BaseTex", source);
@@ -243,12 +233,12 @@ namespace CoreGMIC.Heavy
                     if (_normalize)
                     {
                         resolvedRt = GpuUtils.GetTempRt(w, h, colorFormat, FilterMode.Point);
-                        Graphics.Blit(quantRt, resolvedRt, Material, 4);
+                        Graphics.Blit(quantRt, resolvedRt, Material, 3);
                         cutoutOut = resolvedRt;
                     }
                     else
                     {
-                        Graphics.Blit(quantRt, destination, Material, 4);
+                        Graphics.Blit(quantRt, destination, Material, 3);
                         return;
                     }
                 }
@@ -256,37 +246,19 @@ namespace CoreGMIC.Heavy
                 {
                     Material.SetTexture("_JfaTex", Texture2D.blackTexture);
                     Material.SetTexture("_BaseTex", source);
-                    Graphics.Blit(quantRt, destination, Material, 4);
+                    Graphics.Blit(quantRt, destination, Material, 3);
                     return;
                 }
 
                 // 4. Optional Normalize [0, 255] with temporal EMA smoothing
                 if (_normalize)
                 {
-                    int groupsX = (w + 15) / 16;
-                    int groupsY = (h + 15) / 16;
-
-                    _compute.SetInt("_Width", w);
-                    _compute.SetInt("_Height", h);
-                    _compute.SetFloat("_TemporalAlpha", TemporalAlpha);
-                    _compute.SetInt("_ResetMinMaxHistory", _hasMinMaxHistory ? 0 : 1);
-
-                    _compute.SetBuffer(_kernelClearAreaHist, "_AreaHist", _areaHistBuffer);
-                    _compute.SetBuffer(_kernelClearAreaHist, "_StatsBuf", _statsBuffer);
-                    _compute.Dispatch(_kernelClearAreaHist, 1, 1, 1);
-
-                    _compute.SetTexture(_kernelReduceMinMax, "_InputTex", cutoutOut);
-                    _compute.SetBuffer(_kernelReduceMinMax, "_StatsBuf", _statsBuffer);
-                    _compute.Dispatch(_kernelReduceMinMax, groupsX, groupsY, 1);
-
-                    _compute.SetBuffer(_kernelSmoothMinMax, "_StatsBuf", _statsBuffer);
-                    _compute.SetBuffer(_kernelSmoothMinMax, "_TemporalState", _temporalStateBuffer);
-                    _compute.Dispatch(_kernelSmoothMinMax, 1, 1, 1);
+                    _stats.ComputeMinMax(cutoutOut, rgbMode: true, temporalAlpha: TemporalAlpha, resetHistory: !_hasMinMaxHistory);
                     _hasMinMaxHistory = true;
 
                     Material.SetTexture("_BaseTex", source);
-                    Material.SetBuffer("_StatsBuf", _statsBuffer);
-                    Graphics.Blit(cutoutOut, destination, Material, 5);
+                    Material.SetBuffer("_StatsBuf", _stats.StatsBuffer);
+                    Graphics.Blit(cutoutOut, destination, Material, 4);
                 }
                 else
                 {
@@ -309,6 +281,7 @@ namespace CoreGMIC.Heavy
         public override void ResetParameters()
         {
             base.ResetParameters();
+            _stats?.ResetHistory();
             _centroidsInitialized = false;
             _hasAreaHistory = false;
             _hasMinMaxHistory = false;
@@ -316,6 +289,9 @@ namespace CoreGMIC.Heavy
 
         public override void Dispose()
         {
+            _stats?.Dispose();
+            _stats = null;
+
             GpuUtils.ReleaseBuffer(ref _targetCentroidsBuffer);
             GpuUtils.ReleaseBuffer(ref _centroidsBuffer);
             GpuUtils.ReleaseBuffer(ref _kMeansAccumBuffer);

@@ -12,7 +12,6 @@ Shader "CoreGMIC/VectorPainting"
     float4 _MainTex_TexelSize;
     sampler2D _PrevSourceTex;
 
-    float _SigmaPx;
     float _ColorThreshold;
     float _MinAlpha;
     int _Width;
@@ -20,28 +19,6 @@ Shader "CoreGMIC/VectorPainting"
 
     StructuredBuffer<uint> _ParentBuffer;
     StructuredBuffer<uint> _ShapeSumBuffer;
-
-    float4 RunGaussian1D(float2 uv, float2 axisTexel)
-    {
-        float sigma = max(0.25, _SigmaPx);
-        float invTwoSigmaSq = 0.5 / (sigma * sigma);
-
-        float accum = 0.0;
-        float sumW = 0.0;
-
-        [unroll]
-        for (int k = -10; k <= 10; k++)
-        {
-            float offsetPx = (float)k;
-            float w = exp(-(offsetPx * offsetPx) * invTwoSigmaSq);
-            float2 suv = saturate(uv + axisTexel * offsetPx);
-            accum += tex2Dlod(_MainTex, float4(suv, 0.0, 0.0)).r * w;
-            sumW += w;
-        }
-
-        float val = accum / max(1e-6, sumW);
-        return float4(val, val, val, 1.0);
-    }
     ENDCG
 
     SubShader
@@ -67,37 +44,7 @@ Shader "CoreGMIC/VectorPainting"
             ENDCG
         }
 
-        // Pass 1: Separable Gaussian Blur Horizontal (1px step, 21-tap)
-        Pass
-        {
-            CGPROGRAM
-            #pragma target 4.5
-            #pragma vertex vert
-            #pragma fragment fragBlurH
-
-            float4 fragBlurH(v2f i) : SV_Target
-            {
-                return RunGaussian1D(i.uv, float2(_MainTex_TexelSize.x, 0.0));
-            }
-            ENDCG
-        }
-
-        // Pass 2: Separable Gaussian Blur Vertical (1px step, 21-tap)
-        Pass
-        {
-            CGPROGRAM
-            #pragma target 4.5
-            #pragma vertex vert
-            #pragma fragment fragBlurV
-
-            float4 fragBlurV(v2f i) : SV_Target
-            {
-                return RunGaussian1D(i.uv, float2(0.0, _MainTex_TexelSize.y));
-            }
-            ENDCG
-        }
-
-        // Pass 3: Max Gradient Direction Label (1..8)
+        // Pass 1: Max Gradient Direction Label (1..8)
         Pass
         {
             CGPROGRAM
