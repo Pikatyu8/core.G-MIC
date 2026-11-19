@@ -9,6 +9,7 @@ namespace CoreGMIC.Core
         public bool Enabled { get; set; } = true;
         public bool DisablePlayer { get; set; } = false;
         public bool DisableTiktik { get; set; } = false;
+        public Dictionary<string, bool> ExclusionRules { get; set; } = new Dictionary<string, bool>();
         public bool EnableExperimentalShaders { get; set; } = false;
         public bool NoFastNoise { get; set; } = false;
         public string SelectedFilterId { get; set; } = "none";

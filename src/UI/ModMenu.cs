@@ -134,9 +134,18 @@ namespace CoreGMIC.UI
                 _sidePanel = SidePanel.Attach(
                         screen,
                         _ => _menuRef?.CancelAction?.Invoke(),
-                        new SidePanelOptions { Name = "CoreGMIC" })
-                    .AddToggle("Disable Player", () => EntityExclusionManager.DisablePlayer, v => EntityExclusionManager.DisablePlayer = v)
-                    .AddToggle("Disable Tiktik", () => EntityExclusionManager.DisableTiktik, v => EntityExclusionManager.DisableTiktik = v)
+                        new SidePanelOptions { Name = "CoreGMIC" });
+
+                foreach (ExclusionRule rule in EntityExclusionManager.Rules)
+                {
+                    ExclusionRule capturedRule = rule;
+                    _sidePanel.AddToggle(
+                        capturedRule.DisplayName,
+                        () => capturedRule.Enabled,
+                        v => EntityExclusionManager.SetEnabled(capturedRule.Id, v));
+                }
+
+                _sidePanel
                     .AddToggle("No FastNoise", () => CoreGMICMod.Settings?.NoFastNoise ?? false, v =>
                     {
                         if (CoreGMICMod.Settings != null)
