@@ -29,6 +29,7 @@ namespace CoreGMIC.Heavy
         public override FilterCategory Category => FilterCategory.Experimental;
         public override bool IsAvailable =>
             base.IsAvailable && GpuBlur.IsAvailable && _compute != null && SystemInfo.supportsComputeShaders;
+        public override bool SuppressFastNoise => true;
 
         public VectorPaintingFilter()
         {

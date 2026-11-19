@@ -19,6 +19,7 @@ namespace CoreGMIC.Heavy
         public override FilterCategory Category => FilterCategory.Standard;
         public override bool IsAvailable =>
             base.IsAvailable && GpuBlur.IsAvailable && _stats != null && _stats.IsAvailable;
+        public override bool SuppressFastNoise => true;
 
         public GradientNormFilter()
         {

@@ -20,6 +20,7 @@ namespace CoreGMIC.Core
         public abstract FilterCategory Category { get; }
 
         public virtual bool IsAvailable => _material != null;
+        public virtual bool SuppressFastNoise => false;
         public IReadOnlyList<FilterParameter> Parameters => _parameters;
 
         public abstract void Initialize();

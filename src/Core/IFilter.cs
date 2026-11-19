@@ -19,6 +19,7 @@ namespace CoreGMIC.Core
         string Description { get; }
         FilterCategory Category { get; }
         bool IsAvailable { get; }
+        bool SuppressFastNoise { get; }
         IReadOnlyList<FilterParameter> Parameters { get; }
 
         void Initialize();
