@@ -14,11 +14,6 @@ Shader "CoreGMIC/VectorPainting"
 
     float _ColorThreshold;
     float _MinAlpha;
-    int _Width;
-    int _Height;
-
-    StructuredBuffer<uint> _ParentBuffer;
-    StructuredBuffer<uint> _ShapeSumBuffer;
     ENDCG
 
     SubShader
@@ -86,44 +81,13 @@ Shader "CoreGMIC/VectorPainting"
                     nmax = 1;
                 }
 
-                float encoded = ((float)nmax + 0.5) / 16.0;
-                return float4(encoded, encoded, encoded, encoded);
+                float lbl = (float)nmax;
+                return float4(lbl, lbl, lbl, 1.0);
             }
             ENDCG
         }
 
-        // Pass 4: Resolve Shape Average Color onto Source Alpha
-        Pass
-        {
-            CGPROGRAM
-            #pragma target 4.5
-            #pragma vertex vert
-            #pragma fragment fragResolveShapeAverage
-
-            float4 fragResolveShapeAverage(v2f i) : SV_Target
-            {
-                uint2 px = min(
-                    uint2((uint)max(0, _Width - 1), (uint)max(0, _Height - 1)),
-                    (uint2)floor(saturate(i.uv) * float2((float)_Width, (float)_Height)));
-                uint idx = px.y * (uint)_Width + px.x;
-
-                uint root = _ParentBuffer[idx];
-                uint baseOff = root * 4u;
-                uint cnt = max(1u, _ShapeSumBuffer[baseOff + 3u]);
-
-                float invDenom = 1.0 / ((float)cnt * 1024.0);
-                float3 avgRgb = float3(
-                    (float)_ShapeSumBuffer[baseOff + 0u] * invDenom,
-                    (float)_ShapeSumBuffer[baseOff + 1u] * invDenom,
-                    (float)_ShapeSumBuffer[baseOff + 2u] * invDenom);
-
-                float alpha = tex2Dlod(_MainTex, float4(i.uv, 0.0, 0.0)).a;
-                return float4(saturate(avgRgb), alpha);
-            }
-            ENDCG
-        }
-
-        // Pass 5: 3x3 Mode Filter on Direction Labels (removes 1px speckles and bridges)
+        // Pass 2: 3x3 Mode Filter on Direction Labels (removes 1px speckles and bridges)
         Pass
         {
             CGPROGRAM
@@ -142,7 +106,7 @@ Shader "CoreGMIC/VectorPainting"
                     for (int dx = -1; dx <= 1; dx++)
                     {
                         float2 suv = saturate(i.uv + float2((float)dx, (float)dy) * _MainTex_TexelSize.xy);
-                        int lbl = clamp((int)floor(tex2Dlod(_MainTex, float4(suv, 0.0, 0.0)).a * 16.0), 1, 8);
+                        int lbl = clamp((int)round(tex2Dlod(_MainTex, float4(suv, 0.0, 0.0)).r), 1, 8);
                         int w = (dx == 0 && dy == 0) ? 2 : 1;
                         if (lbl == 1) c1 += w;
                         else if (lbl == 2) c2 += w;
@@ -165,13 +129,13 @@ Shader "CoreGMIC/VectorPainting"
                 if (c7 > bestCnt) { bestCnt = c7; bestLbl = 7; }
                 if (c8 > bestCnt) { bestCnt = c8; bestLbl = 8; }
 
-                float enc = ((float)bestLbl + 0.5) / 16.0;
-                return float4(enc, enc, enc, enc);
+                float outLbl = (float)bestLbl;
+                return float4(outLbl, outLbl, outLbl, 1.0);
             }
             ENDCG
         }
 
-        // Pass 6: Coherent 3x3 Temporal Adaptive IIR Filter on Source RGB
+        // Pass 3: Coherent 3x3 Temporal Adaptive IIR Filter on Source RGB
         Pass
         {
             CGPROGRAM

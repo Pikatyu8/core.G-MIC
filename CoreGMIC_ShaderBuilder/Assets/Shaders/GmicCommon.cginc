@@ -103,6 +103,23 @@ void ComputeSobelGradients(float2 uv, float2 tx, out float3 dx, out float3 dy)
 }
 #endif
 
+#ifdef GMIC_USE_LUMINANCE
+float GmicLuminance(float3 srgb)
+{
+    srgb = saturate(srgb);
+    float3 lo = srgb / 12.92;
+    float3 hi = pow(max((srgb + 0.055) / 1.055, 0.0), 2.4);
+    float3 lin = float3(
+        srgb.r <= 0.04045 ? lo.r : hi.r,
+        srgb.g <= 0.04045 ? lo.g : hi.g,
+        srgb.b <= 0.04045 ? lo.b : hi.b
+    );
+
+    float l = saturate(dot(lin, float3(0.22248840, 0.71690369, 0.06060791)));
+    return (l <= 0.0031308) ? (l * 12.92) : saturate(1.055 * pow(max(l, 1e-6), 0.416667) - 0.055);
+}
+#endif
+
 #ifdef GMIC_USE_TENSOR
 float2 GetTangentAndEdge(float2 uv, out float edgeEnergy)
 {

@@ -1,16 +1,19 @@
 #pragma kernel CSClear
 #pragma kernel CSReduceMinMax
+#pragma kernel CSReduceChannelMinMax
 #pragma kernel CSSmoothMinMax
 #pragma kernel CSHistogram
 #pragma kernel CSBuildCdf
+#pragma kernel CSOtsuThreshold
 
 Texture2D<float4> _InputTex;
-RWStructuredBuffer<uint> _StatsBuf;        // [0]=minUint, [1]=maxUint
-RWStructuredBuffer<uint> _HistBuf;         // 256 bins
+RWStructuredBuffer<uint> _StatsBuf;         // [0]=minUint, [1]=maxUint, [2]=otsuThreshUint
+RWStructuredBuffer<uint> _ChannelStatsBuf;  // [0..2]=minRGB, [3..5]=maxRGB
+RWStructuredBuffer<uint> _HistBuf;          // 256 bins
 RWStructuredBuffer<float2> _TemporalMinMax; // [0]=(minV, maxV)
-RWStructuredBuffer<float4> _CdfHistory;    // 256 elements
-RWStructuredBuffer<float> _CdfBuffer;      // 256 normalized CDF values [0..1]
-RWTexture2D<float4> _CdfTex;               // 256x1: (cdfNorm, minVal, maxVal, 1)
+RWStructuredBuffer<float4> _CdfHistory;     // 256 elements
+RWStructuredBuffer<float> _CdfBuffer;       // 256 normalized CDF values [0..1]
+RWTexture2D<float4> _CdfTex;                // 256x1: (cdfNorm, minVal, maxVal, 1)
 
 int _Width;
 int _Height;
@@ -23,6 +26,12 @@ float _TemporalAlpha;
 
 groupshared uint gsMin[256];
 groupshared uint gsMax[256];
+groupshared uint gsMinR[256];
+groupshared uint gsMinG[256];
+groupshared uint gsMinB[256];
+groupshared uint gsMaxR[256];
+groupshared uint gsMaxG[256];
+groupshared uint gsMaxB[256];
 groupshared uint gsHist[256];
 groupshared uint gsCdf[256];
 groupshared uint gsMinCdf;
@@ -34,6 +43,13 @@ void CSClear(uint3 dtid : SV_DispatchThreadID)
     {
         _StatsBuf[0] = 0x7F7FFFFFu; // FLT_MAX
         _StatsBuf[1] = 0u;          // 0.0f
+        _StatsBuf[2] = 0u;
+    }
+
+    if (dtid.x < 3u)
+    {
+        _ChannelStatsBuf[dtid.x] = 0x7F7FFFFFu;
+        _ChannelStatsBuf[dtid.x + 3u] = 0u;
     }
 
     _HistBuf[dtid.x] = 0u;
@@ -85,6 +101,57 @@ void CSReduceMinMax(uint3 dtid : SV_DispatchThreadID, uint gi : SV_GroupIndex)
     {
         InterlockedMin(_StatsBuf[0], gsMin[0]);
         InterlockedMax(_StatsBuf[1], gsMax[0]);
+    }
+}
+
+[numthreads(16, 16, 1)]
+void CSReduceChannelMinMax(uint3 dtid : SV_DispatchThreadID, uint gi : SV_GroupIndex)
+{
+    if (dtid.x < (uint)_Width && dtid.y < (uint)_Height)
+    {
+        float3 rgb = clamp(_InputTex[dtid.xy].rgb, 0.0, 1e6);
+        gsMinR[gi] = asuint(rgb.r);
+        gsMinG[gi] = asuint(rgb.g);
+        gsMinB[gi] = asuint(rgb.b);
+        gsMaxR[gi] = asuint(rgb.r);
+        gsMaxG[gi] = asuint(rgb.g);
+        gsMaxB[gi] = asuint(rgb.b);
+    }
+    else
+    {
+        gsMinR[gi] = 0x7F7FFFFFu;
+        gsMinG[gi] = 0x7F7FFFFFu;
+        gsMinB[gi] = 0x7F7FFFFFu;
+        gsMaxR[gi] = 0u;
+        gsMaxG[gi] = 0u;
+        gsMaxB[gi] = 0u;
+    }
+
+    GroupMemoryBarrierWithGroupSync();
+
+    [unroll]
+    for (uint stride = 128u; stride > 0u; stride >>= 1u)
+    {
+        if (gi < stride)
+        {
+            gsMinR[gi] = min(gsMinR[gi], gsMinR[gi + stride]);
+            gsMinG[gi] = min(gsMinG[gi], gsMinG[gi + stride]);
+            gsMinB[gi] = min(gsMinB[gi], gsMinB[gi + stride]);
+            gsMaxR[gi] = max(gsMaxR[gi], gsMaxR[gi + stride]);
+            gsMaxG[gi] = max(gsMaxG[gi], gsMaxG[gi + stride]);
+            gsMaxB[gi] = max(gsMaxB[gi], gsMaxB[gi + stride]);
+        }
+        GroupMemoryBarrierWithGroupSync();
+    }
+
+    if (gi == 0u)
+    {
+        InterlockedMin(_ChannelStatsBuf[0], gsMinR[0]);
+        InterlockedMin(_ChannelStatsBuf[1], gsMinG[0]);
+        InterlockedMin(_ChannelStatsBuf[2], gsMinB[0]);
+        InterlockedMax(_ChannelStatsBuf[3], gsMaxR[0]);
+        InterlockedMax(_ChannelStatsBuf[4], gsMaxG[0]);
+        InterlockedMax(_ChannelStatsBuf[5], gsMaxB[0]);
     }
 }
 
@@ -218,4 +285,53 @@ void CSBuildCdf(uint gi : SV_GroupIndex)
 
     _CdfTex[uint2(gi, 0)] = outVal;
     _CdfBuffer[gi] = outVal.r;
+}
+
+[numthreads(1, 1, 1)]
+void CSOtsuThreshold()
+{
+    uint total = 0u;
+    float sum = 0.0;
+    for (uint i = 0u; i < 256u; i++)
+    {
+        uint h = _HistBuf[i];
+        total += h;
+        sum += (float)i * (float)h;
+    }
+
+    uint wB = 0u;
+    float sumB = 0.0;
+    float bestVar = -1.0;
+    uint bestT = 0u;
+    float fTotal = (float)max(1u, total);
+
+    for (uint t = 0u; t < 256u; t++)
+    {
+        uint h = _HistBuf[t];
+        wB += h;
+        if (wB == 0u)
+            continue;
+
+        uint wF = total - wB;
+        if (wF == 0u)
+            break;
+
+        sumB += (float)t * (float)h;
+        float mB = sumB / (float)wB;
+        float mF = (sum - sumB) / (float)wF;
+        float pB = (float)wB / fTotal;
+        float pF = (float)wF / fTotal;
+        float diff = mB - mF;
+        float variance = pB * pF * diff * diff;
+        if (variance > bestVar)
+        {
+            bestVar = variance;
+            bestT = t;
+        }
+    }
+
+    float minV = asfloat(_StatsBuf[0]);
+    float maxV = asfloat(_StatsBuf[1]);
+    float thresh = minV + ((float)bestT / 255.0) * (maxV - minV);
+    _StatsBuf[2] = asuint(thresh);
 }

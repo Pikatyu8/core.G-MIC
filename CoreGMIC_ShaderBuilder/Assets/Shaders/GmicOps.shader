@@ -11,6 +11,11 @@ Shader "CoreGMIC/Ops"
     sampler2D _MainTex;
     float4 _MainTex_TexelSize;
 
+    StructuredBuffer<uint> _ParentBuffer;
+    StructuredBuffer<uint> _ShapeSumBuffer;
+
+    int _Width;
+    int _Height;
     float _SigmaPx;
     float _JfaStep;
     float _FallbackDistance;
@@ -133,6 +138,37 @@ Shader "CoreGMIC/Ops"
                     ? length((i.uv - seed.xy) * _MainTex_TexelSize.zw)
                     : _FallbackDistance;
                 return float4(dist, dist, dist, 1.0);
+            }
+            ENDCG
+        }
+
+        // Pass 4: Resolve 4-Connected Shape Average Color onto Source Alpha
+        Pass
+        {
+            CGPROGRAM
+            #pragma target 4.5
+            #pragma vertex vert
+            #pragma fragment fragResolveShapeAverage
+
+            float4 fragResolveShapeAverage(v2f i) : SV_Target
+            {
+                uint2 px = min(
+                    uint2((uint)max(0, _Width - 1), (uint)max(0, _Height - 1)),
+                    (uint2)floor(saturate(i.uv) * float2((float)_Width, (float)_Height)));
+                uint idx = px.y * (uint)_Width + px.x;
+
+                uint root = _ParentBuffer[idx];
+                uint baseOff = root * 4u;
+                uint cnt = max(1u, _ShapeSumBuffer[baseOff + 3u]);
+
+                float invDenom = 1.0 / ((float)cnt * 256.0);
+                float3 avgRgb = float3(
+                    (float)_ShapeSumBuffer[baseOff + 0u] * invDenom,
+                    (float)_ShapeSumBuffer[baseOff + 1u] * invDenom,
+                    (float)_ShapeSumBuffer[baseOff + 2u] * invDenom);
+
+                float alpha = tex2Dlod(_MainTex, float4(i.uv, 0.0, 0.0)).a;
+                return float4(saturate(avgRgb), alpha);
             }
             ENDCG
         }

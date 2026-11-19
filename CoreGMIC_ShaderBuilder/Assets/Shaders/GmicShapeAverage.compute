@@ -102,7 +102,7 @@ void CSCCLInit(uint3 dtid : SV_DispatchThreadID, uint3 gtid : SV_GroupThreadID, 
 {
     bool inBounds = (dtid.x < (uint)_Width && dtid.y < (uint)_Height);
     gsColor[gi] = inBounds
-        ? min(15u, (uint)floor(_LabelTex[dtid.xy].a * 16.0))
+        ? (uint)round(max(0.0, _LabelTex[dtid.xy].r))
         : 0xFFFFFFFFu;
     gsParent[gi] = gi;
     GroupMemoryBarrierWithGroupSync();
@@ -144,19 +144,19 @@ void CSCCLMergeBorders(uint3 dtid : SV_DispatchThreadID, uint3 gtid : SV_GroupTh
 
     uint w = (uint)_Width;
     uint idx = dtid.y * w + dtid.x;
-    uint myCol = min(15u, (uint)floor(_LabelTex[dtid.xy].a * 16.0));
+    uint myCol = (uint)round(max(0.0, _LabelTex[dtid.xy].r));
 
     if (gtid.x == 0u && dtid.x > 0u)
     {
         uint2 pL = uint2(dtid.x - 1u, dtid.y);
-        if (min(15u, (uint)floor(_LabelTex[pL].a * 16.0)) == myCol)
+        if ((uint)round(max(0.0, _LabelTex[pL].r)) == myCol)
             GlobalUnion(idx, pL.y * w + pL.x);
     }
 
     if (gtid.y == 0u && dtid.y > 0u)
     {
         uint2 pD = uint2(dtid.x, dtid.y - 1u);
-        if (min(15u, (uint)floor(_LabelTex[pD].a * 16.0)) == myCol)
+        if ((uint)round(max(0.0, _LabelTex[pD].r)) == myCol)
             GlobalUnion(idx, pD.y * w + pD.x);
     }
 }
@@ -172,9 +172,9 @@ void CSCCLFlattenAndAccum(uint3 dtid : SV_DispatchThreadID)
     _ParentBuffer[idx] = root;
 
     float3 rgb = saturate(_SourceTex[dtid.xy].rgb);
-    uint rFix = (uint)(rgb.r * 1024.0 + 0.5);
-    uint gFix = (uint)(rgb.g * 1024.0 + 0.5);
-    uint bFix = (uint)(rgb.b * 1024.0 + 0.5);
+    uint rFix = (uint)(rgb.r * 256.0 + 0.5);
+    uint gFix = (uint)(rgb.g * 256.0 + 0.5);
+    uint bFix = (uint)(rgb.b * 256.0 + 0.5);
 
     uint baseOff = root * 4u;
     InterlockedAdd(_ShapeSumBuffer[baseOff + 0u], rFix);
