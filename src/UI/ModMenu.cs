@@ -1,6 +1,8 @@
 using System;
 using System.Collections.Generic;
+using System.Globalization;
 using CoreGMIC.Core;
+using Modding.Menu;
 using Satchel.BetterMenus;
 using SidePanelLib;
 using UnityEngine;
@@ -11,20 +13,31 @@ namespace CoreGMIC.UI
     public static class ModMenu
     {
         private const string ResetButtonId = "reset_active_filter";
-        private const string HeavyWarningPanelId = "heavy_warning_panel";
-        private const string ExperimentalWarningPanelId = "experimental_warning_panel";
-        private const string HeavyWarningOptionLabel = "<color=#FF3B30>[!] GPU HEAVY -></color>";
-        private const string HeavyWarningBannerText = "<color=#FF3B30>GPU HEAVY SHADERS PAST THIS POINT</color>";
-        private const string ExperimentalWarningOptionLabel = "<color=#FF9500>[!] EXPERIMENTAL -></color>";
-        private const string ExperimentalWarningBannerText = "<color=#FF9500>EXPERIMENTAL SHADERS PAST THIS POINT</color>";
+
+        private static readonly FilterCategoryMeta[] CategoryMetas =
+        {
+            new FilterCategoryMeta(FilterCategory.Lut),
+            new FilterCategoryMeta(FilterCategory.Standard),
+            new FilterCategoryMeta(
+                FilterCategory.Heavy,
+                bannerPanelId: "heavy_warning_panel",
+                optionLabel: "<color=#FF3B30>[!] GPU HEAVY -></color>",
+                bannerText: "<color=#FF3B30>GPU HEAVY SHADERS PAST THIS POINT</color>"),
+            new FilterCategoryMeta(
+                FilterCategory.Experimental,
+                bannerPanelId: "experimental_warning_panel",
+                optionLabel: "<color=#FF9500>[!] EXPERIMENTAL -></color>",
+                bannerText: "<color=#FF9500>EXPERIMENTAL SHADERS PAST THIS POINT</color>",
+                isCategoryVisible: () => FilterManager.EnableExperimentalShaders)
+        };
 
         private static Menu _menuRef;
         private static SidePanel _sidePanel;
+        private static SidePanel _bottomRightPanel;
         private static bool _isUpdatingUi;
         private static readonly List<IFilter> _filterSlots = new List<IFilter>();
+        private static readonly List<CornerButtonSpec> _cornerButtonSpecs = new List<CornerButtonSpec>();
         private static int _selectedOptionIndex;
-        private static int _dummyWarningIndex = -1;
-        private static int _dummyExperimentalIndex = -1;
 
         public static MenuScreen GetMenuScreen(MenuScreen modListMenu)
         {
@@ -69,46 +82,45 @@ namespace CoreGMIC.UI
                             return _selectedOptionIndex;
                         },
                         Id: "active_filter"
-                    ),
-                    new TextPanel(
-                        HeavyWarningBannerText,
-                        width: 1000f,
-                        fontSize: 30,
-                        Id: HeavyWarningPanelId
                     )
-                    {
-                        isVisible = IsDummyWarningSelected()
-                    },
-                    new TextPanel(
-                        ExperimentalWarningBannerText,
-                        width: 1000f,
-                        fontSize: 30,
-                        Id: ExperimentalWarningPanelId
-                    )
-                    {
-                        isVisible = IsDummyExperimentalSelected()
-                    },
-                    new MenuButton(
-                        "Reset Filter Defaults",
-                        "Restore default parameters for the currently active filter.",
-                        _ =>
-                        {
-                            IFilter active = FilterManager.ActiveFilter;
-                            if (active == null)
-                            {
-                                return;
-                            }
-
-                            FilterManager.ResetFilterParameters(active);
-                            RefreshFromManager();
-                        },
-                        proceed: false,
-                        Id: ResetButtonId
-                    )
-                    {
-                        isVisible = HasVisibleParameters(FilterManager.ActiveFilter)
-                    }
                 };
+
+                foreach (FilterCategoryMeta meta in CategoryMetas)
+                {
+                    if (!meta.HasBanner)
+                    {
+                        continue;
+                    }
+
+                    elements.Add(new TextPanel(
+                        meta.BannerText,
+                        width: 1000f,
+                        fontSize: 30,
+                        Id: meta.BannerPanelId)
+                    {
+                        isVisible = IsBannerSelected(meta)
+                    });
+                }
+
+                elements.Add(new MenuButton(
+                    "Reset Filter Defaults",
+                    "Restore default parameters for the currently active filter.",
+                    _ =>
+                    {
+                        IFilter active = FilterManager.ActiveFilter;
+                        if (active == null)
+                        {
+                            return;
+                        }
+
+                        FilterManager.ResetFilterParameters(active);
+                        RefreshFromManager();
+                    },
+                    proceed: false,
+                    Id: ResetButtonId)
+                {
+                    isVisible = HasVisibleParameters(FilterManager.ActiveFilter)
+                });
 
                 foreach (IFilter filter in FilterManager.Filters)
                 {
@@ -129,36 +141,54 @@ namespace CoreGMIC.UI
                 }
 
                 _menuRef = new Menu("core.G'MIC", elements.ToArray());
+                _menuRef.OnBuilt += (_, _) => RealignMenuTexts();
+                _menuRef.OnUpdate += (_, _) => RealignMenuTexts();
                 MenuScreen screen = _menuRef.GetMenuScreen(modListMenu);
 
                 _sidePanel = SidePanel.Attach(
+                    screen,
+                    _ => _menuRef?.CancelAction?.Invoke(),
+                    new SidePanelOptions
+                    {
+                        Name = "CoreGMIC",
+                        Anchor = SidePanelAnchor.MiddleRight,
+                        RightInset = 120f
+                    });
+                PopulateSidePanel();
+
+                _bottomRightPanel = SidePanel.Attach(
                         screen,
                         _ => _menuRef?.CancelAction?.Invoke(),
-                        new SidePanelOptions { Name = "CoreGMIC" });
+                        new SidePanelOptions
+                        {
+                            Name = "CoreGMIC_Corner",
+                            Anchor = SidePanelAnchor.BottomRight,
+                            RightInset = 24f,
+                            BottomInset = 20f,
+                            Spacing = 8f,
+                            StackUpwards = true,
+                            HideCursors = true
+                        })
+                    .AddButton(
+                        "Reload Exclusions",
+                        () =>
+                        {
+                            EntityExclusionManager.ReloadJsonRules(applyJsonEnabledState: true);
+                            PopulateSidePanel();
+                            RefreshFromManager();
+                        },
+                        id: "reload_exclusions")
+                    .AddButton(
+                        "Open Exclusion Settings",
+                        () => JsonExclusionConfig.OpenInDefaultEditor(),
+                        id: "open_exclusions");
 
-                foreach (ExclusionRule rule in EntityExclusionManager.Rules)
+                foreach (CornerButtonSpec spec in _cornerButtonSpecs)
                 {
-                    ExclusionRule capturedRule = rule;
-                    _sidePanel.AddToggle(
-                        capturedRule.DisplayName,
-                        () => capturedRule.Enabled,
-                        v => EntityExclusionManager.SetEnabled(capturedRule.Id, v));
+                    _bottomRightPanel.AddButton(spec.Label, spec.OnSubmit, spec.Id, spec.IsVisible);
                 }
 
-                _sidePanel
-                    .AddToggle("No FastNoise", () => CoreGMICMod.Settings?.NoFastNoise ?? false, v =>
-                    {
-                        if (CoreGMICMod.Settings != null)
-                        {
-                            CoreGMICMod.Settings.NoFastNoise = v;
-                        }
-                    })
-                    .AddToggle("Experimental Shaders", () => FilterManager.EnableExperimentalShaders, v =>
-                    {
-                        FilterManager.EnableExperimentalShaders = v;
-                        RefreshFromManager();
-                    });
-
+                RealignMenuTexts();
                 return screen;
             }
             finally
@@ -177,8 +207,7 @@ namespace CoreGMIC.UI
             _isUpdatingUi = true;
             try
             {
-                bool wasHeavyBanner = IsDummyWarningSelected();
-                bool wasExperimentalBanner = IsDummyExperimentalSelected();
+                FilterCategoryMeta preservedBanner = GetSelectedBannerMeta();
 
                 List<string> filterNames = RebuildFilterSlots();
                 if (_menuRef.Find("active_filter") is HorizontalOption activeFilterOption)
@@ -186,15 +215,110 @@ namespace CoreGMIC.UI
                     activeFilterOption.Values = filterNames.ToArray();
                 }
 
-                SyncSelectedOptionIndex(wasHeavyBanner, wasExperimentalBanner);
+                SyncSelectedOptionIndex(preservedBanner);
                 ApplyParameterVisibilityFlags();
                 _sidePanel?.Refresh();
+                _bottomRightPanel?.Refresh();
                 _menuRef.Update();
+                RealignMenuTexts();
             }
             finally
             {
                 _isUpdatingUi = false;
             }
+        }
+
+        public static void RegisterCornerButton(
+            string id,
+            Func<string> label,
+            Action onSubmit,
+            Func<bool> isVisible = null)
+        {
+            if (string.IsNullOrEmpty(id)) throw new ArgumentNullException(nameof(id));
+            if (label == null) throw new ArgumentNullException(nameof(label));
+
+            int existingIdx = _cornerButtonSpecs.FindIndex(s => s.Id == id);
+            CornerButtonSpec spec = new CornerButtonSpec(id, label, onSubmit, isVisible);
+            if (existingIdx >= 0)
+            {
+                _cornerButtonSpecs[existingIdx] = spec;
+            }
+            else
+            {
+                _cornerButtonSpecs.Add(spec);
+            }
+
+            _bottomRightPanel?.AddButton(label, onSubmit, id, isVisible);
+        }
+
+        public static bool UnregisterCornerButton(string id)
+        {
+            if (string.IsNullOrEmpty(id))
+            {
+                return false;
+            }
+
+            int removed = _cornerButtonSpecs.RemoveAll(s => s.Id == id);
+            bool removedFromPanel = _bottomRightPanel != null && _bottomRightPanel.RemoveButton(id);
+            return removed > 0 || removedFromPanel;
+        }
+
+        private static void RealignMenuTexts()
+        {
+            if (_menuRef?.menuScreen == null)
+            {
+                return;
+            }
+
+            foreach (FixVerticalAlign align in _menuRef.menuScreen.GetComponentsInChildren<FixVerticalAlign>(true))
+            {
+                if (align == null)
+                {
+                    continue;
+                }
+
+                if (align.labelFixType == FixVerticalAlign.LabelFixType.KeyMap)
+                {
+                    align.AlignTextKeymap();
+                }
+                else
+                {
+                    align.AlignText();
+                }
+            }
+        }
+
+        private static void PopulateSidePanel()
+        {
+            if (_sidePanel == null)
+            {
+                return;
+            }
+
+            _sidePanel.Clear();
+
+            foreach (ExclusionRule rule in EntityExclusionManager.Rules)
+            {
+                ExclusionRule capturedRule = rule;
+                _sidePanel.AddToggle(
+                    capturedRule.DisplayName,
+                    () => capturedRule.Enabled,
+                    v => EntityExclusionManager.SetEnabled(capturedRule.Id, v));
+            }
+
+            _sidePanel
+                .AddToggle("No FastNoise", () => CoreGMICMod.Settings?.NoFastNoise ?? false, v =>
+                {
+                    if (CoreGMICMod.Settings != null)
+                    {
+                        CoreGMICMod.Settings.NoFastNoise = v;
+                    }
+                })
+                .AddToggle("Experimental Shaders", () => FilterManager.EnableExperimentalShaders, v =>
+                {
+                    FilterManager.EnableExperimentalShaders = v;
+                    RefreshFromManager();
+                });
         }
 
         private static List<string> RebuildFilterSlots()
@@ -206,109 +330,72 @@ namespace CoreGMIC.UI
             _filterSlots.Add(null);
             filterNames.Add("None");
 
-            // Light / LUT / Standard filters first.
-            foreach (IFilter filter in FilterManager.Filters)
+            foreach (FilterCategoryMeta meta in CategoryMetas)
             {
-                if (filter.Category == FilterCategory.Heavy || filter.Category == FilterCategory.Experimental)
+                meta.DummySlotIndex = -1;
+                if (meta.IsCategoryVisible != null && !meta.IsCategoryVisible())
                 {
                     continue;
                 }
 
-                _filterSlots.Add(filter);
-                string availability = filter.IsAvailable ? "" : " [N/A]";
-                filterNames.Add($"{filter.DisplayName}{availability}");
-            }
-
-            // Dummy warning entry before GPU-heavy filters.
-            _dummyWarningIndex = -1;
-            bool hasHeavyFilters = false;
-            foreach (IFilter filter in FilterManager.Filters)
-            {
-                if (filter.Category == FilterCategory.Heavy)
-                {
-                    hasHeavyFilters = true;
-                    break;
-                }
-            }
-
-            if (hasHeavyFilters)
-            {
-                _dummyWarningIndex = _filterSlots.Count;
-                _filterSlots.Add(null);
-                filterNames.Add(HeavyWarningOptionLabel);
-
+                List<IFilter> categoryFilters = new List<IFilter>();
                 foreach (IFilter filter in FilterManager.Filters)
                 {
-                    if (filter.Category != FilterCategory.Heavy)
+                    if (filter.Category == meta.Category)
                     {
-                        continue;
+                        categoryFilters.Add(filter);
                     }
+                }
 
+                if (categoryFilters.Count == 0)
+                {
+                    continue;
+                }
+
+                if (meta.HasBanner)
+                {
+                    meta.DummySlotIndex = _filterSlots.Count;
+                    _filterSlots.Add(null);
+                    filterNames.Add(meta.OptionLabel);
+                }
+
+                foreach (IFilter filter in categoryFilters)
+                {
                     _filterSlots.Add(filter);
                     string availability = filter.IsAvailable ? "" : " [N/A]";
                     filterNames.Add($"{filter.DisplayName}{availability}");
                 }
             }
 
-            // Experimental filters (only shown when enabled via side toggle).
-            _dummyExperimentalIndex = -1;
-            if (FilterManager.EnableExperimentalShaders)
-            {
-                bool hasExperimentalFilters = false;
-                foreach (IFilter filter in FilterManager.Filters)
-                {
-                    if (filter.Category == FilterCategory.Experimental)
-                    {
-                        hasExperimentalFilters = true;
-                        break;
-                    }
-                }
-
-                if (hasExperimentalFilters)
-                {
-                    _dummyExperimentalIndex = _filterSlots.Count;
-                    _filterSlots.Add(null);
-                    filterNames.Add(ExperimentalWarningOptionLabel);
-
-                    foreach (IFilter filter in FilterManager.Filters)
-                    {
-                        if (filter.Category != FilterCategory.Experimental)
-                        {
-                            continue;
-                        }
-
-                        _filterSlots.Add(filter);
-                        string availability = filter.IsAvailable ? "" : " [N/A]";
-                        filterNames.Add($"{filter.DisplayName}{availability}");
-                    }
-                }
-            }
-
             return filterNames;
         }
 
-        private static bool IsDummyWarningSelected()
+        private static FilterCategoryMeta GetSelectedBannerMeta()
         {
-            return _dummyWarningIndex >= 0 && _selectedOptionIndex == _dummyWarningIndex;
+            foreach (FilterCategoryMeta meta in CategoryMetas)
+            {
+                if (IsBannerSelected(meta))
+                {
+                    return meta;
+                }
+            }
+
+            return null;
         }
 
-        private static bool IsDummyExperimentalSelected()
+        private static bool IsBannerSelected(FilterCategoryMeta meta)
         {
-            return _dummyExperimentalIndex >= 0 && _selectedOptionIndex == _dummyExperimentalIndex;
+            return meta != null && meta.HasBanner && meta.DummySlotIndex >= 0 && _selectedOptionIndex == meta.DummySlotIndex;
         }
 
-        private static void SyncSelectedOptionIndex(bool preserveHeavyBanner = false, bool preserveExperimentalBanner = false)
+        private static void SyncSelectedOptionIndex(FilterCategoryMeta preservedBanner = null)
         {
             IFilter active = FilterManager.ActiveFilter;
             if (active == null)
             {
-                if (preserveHeavyBanner && _dummyWarningIndex >= 0)
+                if (preservedBanner != null && preservedBanner.DummySlotIndex >= 0)
                 {
-                    _selectedOptionIndex = _dummyWarningIndex;
-                }
-                else if (preserveExperimentalBanner && _dummyExperimentalIndex >= 0)
-                {
-                    _selectedOptionIndex = _dummyExperimentalIndex;
+                    _selectedOptionIndex = preservedBanner.DummySlotIndex;
                 }
                 else
                 {
@@ -405,6 +492,7 @@ namespace CoreGMIC.UI
                         templateParam.MinValue,
                         templateParam.MaxValue,
                         wholeNumbers: true,
+                        step: 0f,
                         id: elemId
                     );
 
@@ -427,6 +515,7 @@ namespace CoreGMIC.UI
                         templateParam.MinValue,
                         templateParam.MaxValue,
                         wholeNumbers: false,
+                        step: templateParam.Step,
                         id: elemId
                     );
             }
@@ -444,16 +533,18 @@ namespace CoreGMIC.UI
                 return;
             }
 
-            Element warningPanel = _menuRef.Find(HeavyWarningPanelId);
-            if (warningPanel != null)
+            foreach (FilterCategoryMeta meta in CategoryMetas)
             {
-                warningPanel.isVisible = IsDummyWarningSelected();
-            }
+                if (!meta.HasBanner)
+                {
+                    continue;
+                }
 
-            Element experimentalPanel = _menuRef.Find(ExperimentalWarningPanelId);
-            if (experimentalPanel != null)
-            {
-                experimentalPanel.isVisible = IsDummyExperimentalSelected();
+                Element bannerPanel = _menuRef.Find(meta.BannerPanelId);
+                if (bannerPanel != null)
+                {
+                    bannerPanel.isVisible = IsBannerSelected(meta);
+                }
             }
 
             Element resetBtn = _menuRef.Find(ResetButtonId);
@@ -500,8 +591,53 @@ namespace CoreGMIC.UI
             return $"param:{filterId}:{paramKey}";
         }
 
+        private sealed class CornerButtonSpec
+        {
+            public string Id { get; }
+            public Func<string> Label { get; }
+            public Action OnSubmit { get; }
+            public Func<bool> IsVisible { get; }
+
+            public CornerButtonSpec(string id, Func<string> label, Action onSubmit, Func<bool> isVisible)
+            {
+                Id = id;
+                Label = label;
+                OnSubmit = onSubmit;
+                IsVisible = isVisible;
+            }
+        }
+
+        private sealed class FilterCategoryMeta
+        {
+            public FilterCategory Category { get; }
+            public string BannerPanelId { get; }
+            public string OptionLabel { get; }
+            public string BannerText { get; }
+            public Func<bool> IsCategoryVisible { get; }
+            public int DummySlotIndex { get; set; } = -1;
+
+            public FilterCategoryMeta(
+                FilterCategory category,
+                string bannerPanelId = null,
+                string optionLabel = null,
+                string bannerText = null,
+                Func<bool> isCategoryVisible = null)
+            {
+                Category = category;
+                BannerPanelId = bannerPanelId;
+                OptionLabel = optionLabel;
+                BannerText = bannerText;
+                IsCategoryVisible = isCategoryVisible;
+            }
+
+            public bool HasBanner => !string.IsNullOrEmpty(BannerPanelId);
+        }
+
         private sealed class FilterSlider : CustomSlider
         {
+            private readonly float _step;
+            private bool _isSnapping;
+
             public FilterSlider(
                 string name,
                 Action<float> storeValue,
@@ -509,9 +645,22 @@ namespace CoreGMIC.UI
                 float minValue,
                 float maxValue,
                 bool wholeNumbers = false,
+                float step = 0f,
                 string id = "__UseName")
                 : base(name, storeValue, loadValue, minValue, maxValue, wholeNumbers, id)
             {
+                _step = step;
+            }
+
+            public override GameObjectRow Create(ContentArea c, Menu Instance, bool AddToList = true)
+            {
+                GameObjectRow row = base.Create(c, Instance, AddToList);
+                if (_step > 0f && !wholeNumbers && slider != null)
+                {
+                    slider.onValueChanged.AddListener(OnSliderChangedSnap);
+                }
+
+                return row;
             }
 
             public override void Update()
@@ -523,6 +672,78 @@ namespace CoreGMIC.UI
                 }
 
                 base.Update();
+
+                if (label != null)
+                {
+                    FixVerticalAlign align = label.GetComponent<FixVerticalAlign>();
+                    if (align != null)
+                    {
+                        align.AlignText();
+                    }
+                }
+            }
+
+            protected override void UpdateValueLabel()
+            {
+                if (valueLabel == null)
+                {
+                    return;
+                }
+
+                if (wholeNumbers)
+                {
+                    valueLabel.text = $"{Mathf.RoundToInt(value)}";
+                }
+                else if (_step > 0f)
+                {
+                    valueLabel.text = FormatWithStep(value, _step);
+                }
+                else
+                {
+                    base.UpdateValueLabel();
+                }
+
+                FixVerticalAlign align = valueLabel.GetComponent<FixVerticalAlign>();
+                if (align != null)
+                {
+                    align.AlignText();
+                }
+            }
+
+            private void OnSliderChangedSnap(float rawValue)
+            {
+                if (_isSnapping || _step <= 0f || wholeNumbers || slider == null)
+                {
+                    return;
+                }
+
+                float stepped = minValue + Mathf.Round((rawValue - minValue) / _step) * _step;
+                float snapped = Mathf.Clamp((float)Math.Round(stepped, 4), minValue, maxValue);
+                if (!Mathf.Approximately(slider.value, snapped))
+                {
+                    _isSnapping = true;
+                    slider.value = snapped;
+                    _isSnapping = false;
+                }
+            }
+
+            private static string FormatWithStep(float val, float step)
+            {
+                int decimals = 1;
+                if (step > 0f && step < 1f)
+                {
+                    float scaled = step;
+                    decimals = 0;
+                    while (decimals < 4 && Mathf.Abs(scaled - Mathf.Round(scaled)) > 0.001f)
+                    {
+                        scaled *= 10f;
+                        decimals++;
+                    }
+
+                    decimals = Mathf.Max(1, decimals);
+                }
+
+                return val.ToString("F" + decimals, CultureInfo.InvariantCulture);
             }
         }
     }
