@@ -52,10 +52,8 @@ LocalBuildProperties.props
 CoreGMIC_ShaderBuilder/Library/
 CoreGMIC_ShaderBuilder/Temp/
 CoreGMIC_ShaderBuilder/Logs/
-CoreGMIC_ShaderBuilder/Obj/
 CoreGMIC_ShaderBuilder/UserSettings/
 CoreGMIC_ShaderBuilder/.vs/
-CoreGMIC_ShaderBuilder/*.csproj
 CoreGMIC_ShaderBuilder/*.sln
 CoreGMIC_ShaderBuilder/.collabignore
 CoreGMIC_ShaderBuilder/ProjectSettings

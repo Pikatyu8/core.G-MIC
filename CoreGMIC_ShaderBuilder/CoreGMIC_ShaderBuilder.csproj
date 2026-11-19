@@ -1,0 +1,452 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <AssemblyName>CoreGMIC_ShaderBuilder</AssemblyName>
+    <RootNamespace>CoreGMIC.ShaderBuilder</RootNamespace>
+    <TargetFramework>net472</TargetFramework>
+    <LangVersion>latest</LangVersion>
+    <EnableDefaultCompileItems>false</EnableDefaultCompileItems>
+    <GenerateAssemblyInfo>false</GenerateAssemblyInfo>
+  </PropertyGroup>
+
+  <Import Project="..\LocalBuildProperties_example.props" Condition="Exists('..\LocalBuildProperties_example.props')" />
+  <Import Project="..\LocalBuildProperties.props" Condition="Exists('..\LocalBuildProperties.props')" />
+
+  <PropertyGroup>
+    <UnityManagedDir Condition="'$(UnityManagedDir)' == '' and Exists('C:\Program Files\Unity\Hub\Editor\2020.2.2f1\Editor\Data\Managed\UnityEditor.dll')">C:\Program Files\Unity\Hub\Editor\2020.2.2f1\Editor\Data\Managed</UnityManagedDir>
+    <UnityManagedDir Condition="'$(UnityManagedDir)' == '' and Exists('C:\Program Files\Unity\Editor\Data\Managed\UnityEditor.dll')">C:\Program Files\Unity\Editor\Data\Managed</UnityManagedDir>
+    <UnityManagedDir Condition="'$(UnityManagedDir)' == '' and Exists('D:\Program Files\Unity\Hub\Editor\2020.2.2f1\Editor\Data\Managed\UnityEditor.dll')">D:\Program Files\Unity\Hub\Editor\2020.2.2f1\Editor\Data\Managed</UnityManagedDir>
+    <HasUnityEditor Condition="'$(UnityManagedDir)' != '' and Exists('$(UnityManagedDir)\UnityEditor.dll')">true</HasUnityEditor>
+  </PropertyGroup>
+
+  <ItemGroup Condition="'$(HasUnityEditor)' == 'true'">
+    <Compile Include="Assets\Editor\**\*.cs" />
+    <Reference Include="UnityEngine">
+      <HintPath>$(UnityManagedDir)\UnityEngine.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="UnityEngine.CoreModule" Condition="Exists('$(UnityManagedDir)\UnityEngine.CoreModule.dll')">
+      <HintPath>$(UnityManagedDir)\UnityEngine.CoreModule.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="UnityEditor">
+      <HintPath>$(UnityManagedDir)\UnityEditor.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="UnityEditor.CoreModule" Condition="Exists('$(UnityManagedDir)\UnityEditor.CoreModule.dll')">
+      <HintPath>$(UnityManagedDir)\UnityEditor.CoreModule.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+  </ItemGroup>
+
+  <ItemGroup>
+    <None Include="Assets\Shaders\**\*.shader" />
+    <None Include="Assets\Shaders\**\*.compute" />
+    <None Include="Assets\Shaders\**\*.cginc" />
+  </ItemGroup>
+
+  <UsingTask TaskName="ValidateGmicShadersTask"
+             TaskFactory="RoslynCodeTaskFactory"
+             AssemblyFile="$(MSBuildToolsPath)\Microsoft.Build.Tasks.Core.dll">
+    <ParameterGroup>
+      <ShaderDir ParameterType="System.String" Required="true" />
+      <SrcDir ParameterType="System.String" Required="true" />
+      <BundleFile ParameterType="System.String" Required="true" />
+    </ParameterGroup>
+    <Task>
+      <Using Namespace="System" />
+      <Using Namespace="System.Collections.Generic" />
+      <Using Namespace="System.Diagnostics" />
+      <Using Namespace="System.IO" />
+      <Using Namespace="System.Linq" />
+      <Using Namespace="System.Text.RegularExpressions" />
+      <Code Type="Fragment" Language="cs">
+        <![CDATA[
+        string StripComments(string text)
+        {
+            text = Regex.Replace(text, @"/\*.*?\*/", match => new string('\n', match.Value.Count(c => c == '\n')), RegexOptions.Singleline);
+            text = Regex.Replace(text, @"//.*?$", "", RegexOptions.Multiline);
+            return text;
+        }
+
+        int FindMatchingBrace(string text, int openIndex)
+        {
+            int depth = 0;
+            for (int i = openIndex; i < text.Length; i++)
+            {
+                if (text[i] == '{') depth++;
+                else if (text[i] == '}')
+                {
+                    depth--;
+                    if (depth == 0) return i;
+                }
+            }
+            return -1;
+        }
+
+        int GetLineNumber(string text, int charIndex)
+        {
+            int line = 1;
+            int limit = Math.Min(charIndex, text.Length);
+            for (int i = 0; i < limit; i++)
+            {
+                if (text[i] == '\n') line++;
+            }
+            return line;
+        }
+
+        if (!Directory.Exists(ShaderDir))
+        {
+            Log.LogError("Shader directory not found: " + ShaderDir);
+            return false;
+        }
+
+        string[] shaderFiles = Directory.GetFiles(ShaderDir, "*.shader", SearchOption.AllDirectories);
+        string[] computeFiles = Directory.GetFiles(ShaderDir, "*.compute", SearchOption.AllDirectories);
+        string[] cgincFiles = Directory.GetFiles(ShaderDir, "*.cginc", SearchOption.AllDirectories);
+
+        var shaderNameToPath = new Dictionary<string, string>(StringComparer.Ordinal);
+        var shaderNameToPassCount = new Dictionary<string, int>(StringComparer.Ordinal);
+        var shaderNameToCombinedCode = new Dictionary<string, string>(StringComparer.Ordinal);
+        var computeNameToPath = new Dictionary<string, string>(StringComparer.Ordinal);
+        var computeNameToKernels = new Dictionary<string, HashSet<string>>(StringComparer.Ordinal);
+
+        // 1. Validate .cginc, .shader, .compute syntax and Unity 2020.2 HLSL rules
+        foreach (string file in shaderFiles.Concat(computeFiles).Concat(cgincFiles))
+        {
+            string raw = File.ReadAllText(file);
+            string code = StripComments(raw);
+            string ext = Path.GetExtension(file).ToLowerInvariant();
+
+            // Balanced braces check
+            int braceBalance = 0;
+            for (int i = 0; i < code.Length; i++)
+            {
+                if (code[i] == '{') braceBalance++;
+                else if (code[i] == '}')
+                {
+                    braceBalance--;
+                    if (braceBalance < 0)
+                    {
+                        Log.LogError(file + "(" + GetLineNumber(code, i) + "): Unexpected closing brace '}'.");
+                        break;
+                    }
+                }
+            }
+            if (braceBalance > 0)
+            {
+                Log.LogError(file + ": Unclosed brace '{' (balance = " + braceBalance + ").");
+            }
+
+            // Local #include existence check
+            foreach (Match m in Regex.Matches(code, @"#include\s+""([^""]+)"""))
+            {
+                string inc = m.Groups[1].Value;
+                if (inc.Equals("UnityCG.cginc", StringComparison.OrdinalIgnoreCase)) continue;
+                string incPath = Path.Combine(Path.GetDirectoryName(file), inc);
+                if (!File.Exists(incPath))
+                {
+                    incPath = Path.Combine(ShaderDir, inc);
+                }
+                if (!File.Exists(incPath))
+                {
+                    Log.LogError(file + "(" + GetLineNumber(code, m.Index) + "): Missing include file '" + inc + "'.");
+                }
+            }
+
+            // No tex2D(...) inside for/while loops (must use tex2Dlod)
+            foreach (Match lm in Regex.Matches(code, @"\b(for|while)\s*\([^)]*\)\s*\{"))
+            {
+                int openIdx = lm.Index + lm.Value.Length - 1;
+                int closeIdx = FindMatchingBrace(code, openIdx);
+                if (closeIdx > openIdx)
+                {
+                    string body = code.Substring(openIdx, closeIdx - openIdx + 1);
+                    Match texM = Regex.Match(body, @"\btex2D\s*\(");
+                    if (texM.Success)
+                    {
+                        int line = GetLineNumber(code, openIdx + texM.Index);
+                        Log.LogError(file + "(" + line + "): tex2D() inside loop is invalid/divergent in HLSL; use tex2Dlod(..., float4(uv, 0, 0)).");
+                    }
+
+                    if (ext == ".compute" && body.Contains("GroupMemoryBarrierWithGroupSync()"))
+                    {
+                        if (Regex.IsMatch(body, @"\bif\s*\([^)]*\)[^{;\n]*\b(break|continue|return)\s*;") ||
+                            Regex.IsMatch(body, @"\bif\s*\([^)]*\)\s*\{[^}]*\b(break|continue|return)\s*;"))
+                        {
+                            int line = GetLineNumber(code, openIdx);
+                            Log.LogError(file + "(" + line + "): Conditional break/continue/return inside a loop with GroupMemoryBarrierWithGroupSync() fails Unity 2020.2 fxc compilation.");
+                        }
+                    }
+                }
+            }
+
+            if (ext == ".shader")
+            {
+                int cgCount = Regex.Matches(code, @"\b(CGPROGRAM|CGINCLUDE)\b").Count;
+                int endCgCount = Regex.Matches(code, @"\bENDCG\b").Count;
+                if (cgCount != endCgCount)
+                {
+                    Log.LogError(file + ": Mismatched CGPROGRAM/CGINCLUDE (" + cgCount + ") and ENDCG (" + endCgCount + ").");
+                }
+
+                Match nameM = Regex.Match(code, @"\bShader\s+""([^""]+)""");
+                if (!nameM.Success)
+                {
+                    Log.LogError(file + ": Missing Shader \"Name\" declaration.");
+                    continue;
+                }
+
+                string shaderName = nameM.Groups[1].Value;
+                shaderNameToPath[shaderName] = file;
+
+                string combined = code;
+                foreach (Match incM in Regex.Matches(code, @"#include\s+""([^""]+)"""))
+                {
+                    string incFile = Path.Combine(Path.GetDirectoryName(file), incM.Groups[1].Value);
+                    if (File.Exists(incFile))
+                    {
+                        combined += "\n" + StripComments(File.ReadAllText(incFile));
+                    }
+                }
+                shaderNameToCombinedCode[shaderName] = combined;
+
+                // Extract declared StructuredBuffers in CGINCLUDE / global scope
+                var structBuffers = new List<string>();
+                foreach (Match sbM in Regex.Matches(code, @"\bStructuredBuffer\s*<[^>]+>\s+(\w+)\s*;"))
+                {
+                    structBuffers.Add(sbM.Groups[1].Value);
+                }
+
+                int passCount = 0;
+                foreach (Match pm in Regex.Matches(code, @"\bPass\s*\{"))
+                {
+                    int pOpen = pm.Index + pm.Value.Length - 1;
+                    int pClose = FindMatchingBrace(code, pOpen);
+                    if (pClose > pOpen)
+                    {
+                        passCount++;
+                        string passBody = code.Substring(pOpen, pClose - pOpen + 1);
+                        Match targetM = Regex.Match(passBody, @"#pragma\s+target\s+(\d+\.\d+)");
+                        double targetVer = targetM.Success ? double.Parse(targetM.Groups[1].Value, System.Globalization.CultureInfo.InvariantCulture) : 2.0;
+
+                        if (targetM.Success && targetVer <= 3.0)
+                        {
+                            if (passBody.Contains("GMIC_USE_HASH") || Regex.IsMatch(passBody, @"\buint\d?\b"))
+                            {
+                                Log.LogError(file + "(" + GetLineNumber(code, pOpen) + "): #pragma target 3.0 pass uses uint or GMIC_USE_HASH; bump to #pragma target 4.0+.");
+                            }
+                        }
+
+                        foreach (string sbName in structBuffers)
+                        {
+                            if (Regex.IsMatch(passBody, @"\b" + Regex.Escape(sbName) + @"\b") && targetVer < 4.5)
+                            {
+                                Log.LogError(file + "(" + GetLineNumber(code, pOpen) + "): Pass uses StructuredBuffer '" + sbName + "' without #pragma target 4.5.");
+                            }
+                        }
+                    }
+                }
+                shaderNameToPassCount[shaderName] = passCount;
+            }
+            else if (ext == ".compute")
+            {
+                if (Regex.IsMatch(code, @"\bgloballycoherent\b"))
+                {
+                    Log.LogError(file + ": 'globallycoherent' is unsupported by Unity 2020.2 fxc compute compiler.");
+                }
+
+                string compName = Path.GetFileNameWithoutExtension(file);
+                computeNameToPath[compName] = file;
+                var kernels = new HashSet<string>(StringComparer.Ordinal);
+                foreach (Match km in Regex.Matches(code, @"#pragma\s+kernel\s+(\w+)"))
+                {
+                    kernels.Add(km.Groups[1].Value);
+                }
+                if (kernels.Count == 0)
+                {
+                    Log.LogError(file + ": Compute shader has no #pragma kernel declarations.");
+                }
+                computeNameToKernels[compName] = kernels;
+            }
+        }
+
+        // 2. Real HLSL compiler check on .compute files via Windows SDK fxc.exe (if installed)
+        string pf86 = Environment.GetFolderPath(Environment.SpecialFolder.ProgramFilesX86);
+        string kitsBin = Path.Combine(pf86, "Windows Kits", "10", "bin");
+        string fxcPath = null;
+        if (Directory.Exists(kitsBin))
+        {
+            string[] verDirs = Directory.GetDirectories(kitsBin, "10.*");
+            Array.Sort(verDirs, StringComparer.OrdinalIgnoreCase);
+            for (int i = verDirs.Length - 1; i >= 0; i--)
+            {
+                string cand = Path.Combine(verDirs[i], "x64", "fxc.exe");
+                if (File.Exists(cand))
+                {
+                    fxcPath = cand;
+                    break;
+                }
+            }
+        }
+
+        if (fxcPath != null)
+        {
+            string tempOut = Path.Combine(Path.GetTempPath(), "coregmic_fxc_validate.cso");
+            try
+            {
+                foreach (var kv in computeNameToKernels)
+                {
+                    string cFile = computeNameToPath[kv.Key];
+                    foreach (string kernel in kv.Value)
+                    {
+                        var psi = new ProcessStartInfo
+                        {
+                            FileName = fxcPath,
+                            Arguments = "/nologo /T cs_5_0 /E " + kernel + " /D GMIC_COMPUTE=1 /I \"" + ShaderDir + "\" /Fo \"" + tempOut + "\" \"" + cFile + "\"",
+                            UseShellExecute = false,
+                            RedirectStandardError = true,
+                            RedirectStandardOutput = true,
+                            CreateNoWindow = true
+                        };
+                        using (Process p = Process.Start(psi))
+                        {
+                            string stderr = p.StandardError.ReadToEnd();
+                            p.WaitForExit();
+                            if (p.ExitCode != 0)
+                            {
+                                Log.LogError("fxc.exe failed on " + Path.GetFileName(cFile) + " kernel '" + kernel + "': " + stderr.Trim());
+                            }
+                        }
+                    }
+                }
+            }
+            finally
+            {
+                if (File.Exists(tempOut)) File.Delete(tempOut);
+            }
+        }
+        else
+        {
+            Log.LogMessage(MessageImportance.Normal, "Windows SDK fxc.exe not found; skipped external HLSL compute compilation.");
+        }
+
+        // 3. Cross-validate C# sources in ../src against shaders & compute kernels
+        if (Directory.Exists(SrcDir))
+        {
+            string[] csFiles = Directory.GetFiles(SrcDir, "*.cs", SearchOption.AllDirectories);
+            string modEntryFile = csFiles.FirstOrDefault(p => Path.GetFileName(p).Equals("CoreGMICMod.cs", StringComparison.OrdinalIgnoreCase));
+            string modEntryCode = modEntryFile != null ? StripComments(File.ReadAllText(modEntryFile)) : "";
+
+            foreach (string csFile in csFiles)
+            {
+                string csCode = StripComments(File.ReadAllText(csFile));
+
+                // Check all FilterBase subclasses are registered in CoreGMICMod.cs
+                if (!string.IsNullOrEmpty(modEntryCode))
+                {
+                    foreach (Match fm in Regex.Matches(csCode, @"\bclass\s+(\w+)\s*:\s*FilterBase\b"))
+                    {
+                        if (Regex.IsMatch(csCode, @"\babstract\s+class\s+" + Regex.Escape(fm.Groups[1].Value) + @"\b")) continue;
+                        string filterClass = fm.Groups[1].Value;
+                        if (!Regex.IsMatch(modEntryCode, @"\bnew\s+" + Regex.Escape(filterClass) + @"\s*\("))
+                        {
+                            Log.LogWarning(csFile + ": Filter class '" + filterClass + "' is not registered in CoreGMICMod.cs.");
+                        }
+                    }
+                }
+
+                var usedShaders = new List<string>();
+                foreach (Match sm in Regex.Matches(csCode, @"(?:TryCreateMaterial|ShaderManager\.GetShader)\s*\(\s*""([^""]+)""\s*\)"))
+                {
+                    string sName = sm.Groups[1].Value;
+                    usedShaders.Add(sName);
+                    if (!shaderNameToPath.ContainsKey(sName))
+                    {
+                        Log.LogError(csFile + "(" + GetLineNumber(csCode, sm.Index) + "): Shader '" + sName + "' not found in " + ShaderDir + ".");
+                    }
+                }
+
+                var usedComputes = new List<string>();
+                foreach (Match cm in Regex.Matches(csCode, @"(?:TryLoadComputeShader|ShaderManager\.GetComputeShader)\s*\(\s*""([^""]+)"""))
+                {
+                    string cName = cm.Groups[1].Value;
+                    usedComputes.Add(cName);
+                    if (!computeNameToPath.ContainsKey(cName))
+                    {
+                        Log.LogError(csFile + "(" + GetLineNumber(csCode, cm.Index) + "): Compute shader '" + cName + ".compute' not found in " + ShaderDir + ".");
+                    }
+                }
+
+                if (usedComputes.Count > 0)
+                {
+                    foreach (Match km in Regex.Matches(csCode, @"\.FindKernel\s*\(\s*""([^""]+)""\s*\)"))
+                    {
+                        string kName = km.Groups[1].Value;
+                        bool found = usedComputes.Any(cn => computeNameToKernels.ContainsKey(cn) && computeNameToKernels[cn].Contains(kName));
+                        if (!found)
+                        {
+                            Log.LogError(csFile + "(" + GetLineNumber(csCode, km.Index) + "): Compute kernel '" + kName + "' not found in [" + string.Join(", ", usedComputes) + "].");
+                        }
+                    }
+                }
+
+                if (usedShaders.Count == 1 && shaderNameToPassCount.ContainsKey(usedShaders[0]))
+                {
+                    string sName = usedShaders[0];
+                    int maxPass = shaderNameToPassCount[sName];
+                    string sCode = shaderNameToCombinedCode[sName];
+
+                    foreach (Match bm in Regex.Matches(csCode, @"Graphics\.Blit\s*\([^;]*,\s*(?:Material|mat)\s*,\s*(\d+)\s*\)"))
+                    {
+                        int passIdx = int.Parse(bm.Groups[1].Value);
+                        if (passIdx < 0 || passIdx >= maxPass)
+                        {
+                            Log.LogError(csFile + "(" + GetLineNumber(csCode, bm.Index) + "): Pass index " + passIdx + " out of range for shader '" + sName + "' (has " + maxPass + " passes).");
+                        }
+                    }
+
+                    foreach (Match um in Regex.Matches(csCode, @"(?:Material|mat)\.Set(?:Float|Int|Vector|Matrix|Texture|Buffer)\s*\(\s*""(_\w+)"""))
+                    {
+                        string uName = um.Groups[1].Value;
+                        if (!Regex.IsMatch(sCode, @"\b" + Regex.Escape(uName) + @"\b"))
+                        {
+                            Log.LogError(csFile + "(" + GetLineNumber(csCode, um.Index) + "): Uniform '" + uName + "' is set in C# but not declared in shader '" + sName + "'.");
+                        }
+                    }
+                }
+            }
+        }
+
+        // 4. Check AssetBundle freshness
+        if (!File.Exists(BundleFile))
+        {
+            Log.LogWarning("AssetBundle missing at '" + BundleFile + "'. Build bundle in Unity and copy it before building core.GMIC.");
+        }
+        else
+        {
+            DateTime bundleUtc = File.GetLastWriteTimeUtc(BundleFile);
+            string newer = shaderFiles.Concat(computeFiles).Concat(cgincFiles)
+                .FirstOrDefault(f => File.GetLastWriteTimeUtc(f) > bundleUtc);
+            if (newer != null)
+            {
+                Log.LogWarning("Shader '" + Path.GetFileName(newer) + "' is newer than '" + BundleFile + "'. Rebuild gmicshaders in Unity and copy it.");
+            }
+        }
+
+        if (Log.HasLoggedErrors) return false;
+        ]]>
+      </Code>
+    </Task>
+  </UsingTask>
+
+  <Target Name="WarnMissingUnityEditor" BeforeTargets="BeforeBuild" Condition="'$(HasUnityEditor)' != 'true'">
+    <Message Importance="High" Text="[CoreGMIC_ShaderBuilder] UnityEditor.dll not found automatically; Editor C# compilation skipped. Shader validation will still run. Set &lt;UnityManagedDir&gt; in LocalBuildProperties.props if needed." />
+  </Target>
+
+  <Target Name="ValidateShaders" AfterTargets="Build">
+    <ValidateGmicShadersTask
+      ShaderDir="$(MSBuildProjectDirectory)\Assets\Shaders"
+      SrcDir="$(MSBuildProjectDirectory)\..\src"
+      BundleFile="$(MSBuildProjectDirectory)\..\Assets\Build\win\gmicshaders" />
+  </Target>
+</Project>

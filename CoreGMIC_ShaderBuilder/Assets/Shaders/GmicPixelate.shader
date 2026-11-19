@@ -62,7 +62,7 @@ Shader "CoreGMIC/Pixelate"
                     {
                         float2 samplePixel = blockOrigin + ((float2(x, y) + 0.5) / 3.0) * _BlockSize;
                         float2 sampleUv = saturate(samplePixel * _MainTex_TexelSize.xy);
-                        accum += tex2D(_MainTex, sampleUv);
+                        accum += tex2Dlod(_MainTex, float4(sampleUv, 0.0, 0.0));
                     }
                 }
 

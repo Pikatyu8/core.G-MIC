@@ -5,9 +5,6 @@ namespace CoreGMIC.Heavy
 {
     public class VectorPaintingFilter : FilterBase
     {
-        private const float MaxSigmaPerPass = 3.3f;
-        private const float ReconstructSigma = 2.2f;
-
         private ComputeShader _compute;
 
         private int _kernelCCLInit;
@@ -30,7 +27,8 @@ namespace CoreGMIC.Heavy
         public override string DisplayName => "Vector Painting";
         public override string Description => "Simulates a vector art style with clean areas of color.";
         public override FilterCategory Category => FilterCategory.Experimental;
-        public override bool IsAvailable => base.IsAvailable && _compute != null && SystemInfo.supportsComputeShaders;
+        public override bool IsAvailable =>
+            base.IsAvailable && GpuBlur.IsAvailable && _compute != null && SystemInfo.supportsComputeShaders;
 
         public VectorPaintingFilter()
         {
@@ -88,13 +86,6 @@ namespace CoreGMIC.Heavy
 
             RenderTexture stableSource = null;
             RenderTexture lumFull = null;
-            RenderTexture lumScratch = null;
-            RenderTexture halfA = null;
-            RenderTexture halfB = null;
-            RenderTexture quarterA = null;
-            RenderTexture quarterB = null;
-            RenderTexture eighthA = null;
-            RenderTexture eighthB = null;
             RenderTexture labelRt = null;
             RenderTexture labelCleanRt = null;
 
@@ -111,7 +102,7 @@ namespace CoreGMIC.Heavy
                         Material.SetTexture("_PrevSourceTex", _prevSourceRt);
                         Material.SetFloat("_ColorThreshold", _colorThreshold);
                         Material.SetFloat("_MinAlpha", _minAlpha);
-                        Graphics.Blit(source, stableSource, Material, 6);
+                        Graphics.Blit(source, stableSource, Material, 4);
                         activeSource = stableSource;
                     }
 
@@ -127,76 +118,15 @@ namespace CoreGMIC.Heavy
                 Graphics.Blit(activeSource, lumFull, Material, 0);
 
                 float sigmaFull = (10f - _details) * 0.01f * Mathf.Max(w, h);
-                if (sigmaFull > 0.05f)
-                {
-                    lumScratch = GpuUtils.GetTempRt(w, h, lumFormat);
-
-                    if (sigmaFull <= 6.0f)
-                    {
-                        RunMultiPassGaussian(lumFull, lumScratch, sigmaFull);
-                    }
-                    else
-                    {
-                        int hw = Mathf.Max(1, w / 2);
-                        int hh = Mathf.Max(1, h / 2);
-                        halfA = GpuUtils.GetTempRt(hw, hh, lumFormat);
-                        halfB = GpuUtils.GetTempRt(hw, hh, lumFormat);
-                        Graphics.Blit(lumFull, halfA);
-
-                        if (sigmaFull <= 14.0f)
-                        {
-                            float remVar = Mathf.Max(0.25f, sigmaFull * sigmaFull - ReconstructSigma * ReconstructSigma);
-                            float sigmaHalf = Mathf.Sqrt(remVar) * 0.5f;
-                            RunMultiPassGaussian(halfA, halfB, sigmaHalf);
-                        }
-                        else
-                        {
-                            int qw = Mathf.Max(1, w / 4);
-                            int qh = Mathf.Max(1, h / 4);
-                            quarterA = GpuUtils.GetTempRt(qw, qh, lumFormat);
-                            quarterB = GpuUtils.GetTempRt(qw, qh, lumFormat);
-                            Graphics.Blit(halfA, quarterA);
-
-                            if (sigmaFull <= 28.0f)
-                            {
-                                float reconVar = ReconstructSigma * ReconstructSigma * (1f + 4f);
-                                float remVar = Mathf.Max(0.25f, sigmaFull * sigmaFull - reconVar);
-                                float sigmaQ = Mathf.Sqrt(remVar) * 0.25f;
-                                RunMultiPassGaussian(quarterA, quarterB, sigmaQ);
-                            }
-                            else
-                            {
-                                int ew = Mathf.Max(1, w / 8);
-                                int eh = Mathf.Max(1, h / 8);
-                                eighthA = GpuUtils.GetTempRt(ew, eh, lumFormat);
-                                eighthB = GpuUtils.GetTempRt(ew, eh, lumFormat);
-                                Graphics.Blit(quarterA, eighthA);
-
-                                float reconVar = ReconstructSigma * ReconstructSigma * (1f + 4f + 16f);
-                                float remVar = Mathf.Max(0.25f, sigmaFull * sigmaFull - reconVar);
-                                float sigmaE = Mathf.Sqrt(remVar) * 0.125f;
-                                RunMultiPassGaussian(eighthA, eighthB, sigmaE);
-
-                                Graphics.Blit(eighthA, quarterA);
-                                RunSingleGaussian(quarterA, quarterB, ReconstructSigma);
-                            }
-
-                            Graphics.Blit(quarterA, halfA);
-                            RunSingleGaussian(halfA, halfB, ReconstructSigma);
-                        }
-
-                        Graphics.Blit(halfA, lumFull);
-                        RunSingleGaussian(lumFull, lumScratch, ReconstructSigma);
-                    }
-                }
+                GpuBlur.BlurInPlace(lumFull, sigmaFull);
 
                 // Classify gradient direction and smooth out 1px bridges/speckles with two 3x3 mode passes.
                 labelRt = GpuUtils.GetTempRt(w, h, labelFormat, FilterMode.Point);
                 labelCleanRt = GpuUtils.GetTempRt(w, h, labelFormat, FilterMode.Point);
 
-                Graphics.Blit(lumFull, labelRt, Material, 3);
-                Graphics.Blit(labelRt, labelCleanRt, Material, 5);
-                Graphics.Blit(labelCleanRt, labelRt, Material, 5);
+                Graphics.Blit(lumFull, labelRt, Material, 1);
+                Graphics.Blit(labelRt, labelCleanRt, Material, 3);
+                Graphics.Blit(labelCleanRt, labelRt, Material, 3);
 
                 int groupsX = (w + 15) / 16;
                 int groupsY = (h + 15) / 16;
@@ -223,19 +153,12 @@ namespace CoreGMIC.Heavy
                 Material.SetInt("_Height", h);
                 Material.SetBuffer("_ParentBuffer", _parentBuffer);
                 Material.SetBuffer("_ShapeSumBuffer", _shapeSumBuffer);
-                Graphics.Blit(activeSource, destination, Material, 4);
+                Graphics.Blit(activeSource, destination, Material, 2);
             }
             finally
             {
                 GpuUtils.ReleaseTemp(stableSource);
                 GpuUtils.ReleaseTemp(lumFull);
-                GpuUtils.ReleaseTemp(lumScratch);
-                GpuUtils.ReleaseTemp(halfA);
-                GpuUtils.ReleaseTemp(halfB);
-                GpuUtils.ReleaseTemp(quarterA);
-                GpuUtils.ReleaseTemp(quarterB);
-                GpuUtils.ReleaseTemp(eighthA);
-                GpuUtils.ReleaseTemp(eighthB);
                 GpuUtils.ReleaseTemp(labelRt);
                 GpuUtils.ReleaseTemp(labelCleanRt);
             }
@@ -257,23 +180,6 @@ namespace CoreGMIC.Heavy
             _hasPrevSource = false;
             _compute = null;
             base.Dispose();
-        }
-
-        private void RunMultiPassGaussian(RenderTexture target, RenderTexture scratch, float totalSigma)
-        {
-            int passes = Mathf.Max(1, Mathf.CeilToInt((totalSigma * totalSigma) / (MaxSigmaPerPass * MaxSigmaPerPass)));
-            float sigmaPerPass = totalSigma / Mathf.Sqrt(passes);
-            for (int p = 0; p < passes; p++)
-            {
-                RunSingleGaussian(target, scratch, sigmaPerPass);
-            }
-        }
-
-        private void RunSingleGaussian(RenderTexture target, RenderTexture scratch, float sigma)
-        {
-            Material.SetFloat("_SigmaPx", sigma);
-            Graphics.Blit(target, scratch, Material, 1);
-            Graphics.Blit(scratch, target, Material, 2);
         }
 
         private void EnsureBuffers(int w, int h, RenderTextureFormat stableFormat)
