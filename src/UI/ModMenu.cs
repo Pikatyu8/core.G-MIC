@@ -6,6 +6,7 @@ using Modding.Menu;
 using Satchel.BetterMenus;
 using SidePanelLib;
 using UnityEngine;
+using UnityEngine.UI;
 using MenuButton = Satchel.BetterMenus.MenuButton;
 
 namespace CoreGMIC.UI
@@ -141,8 +142,13 @@ namespace CoreGMIC.UI
                 }
 
                 _menuRef = new Menu("core.G'MIC", elements.ToArray());
-                _menuRef.OnBuilt += (_, _) => RealignMenuTexts();
+                _menuRef.OnBuilt += (_, _) =>
+                {
+                    RealignMenuTexts();
+                    AdjustRowSpacingByDescription();
+                };
                 _menuRef.OnUpdate += (_, _) => RealignMenuTexts();
+                _menuRef.OnReflow += (_, _) => AdjustRowSpacingByDescription();
                 MenuScreen screen = _menuRef.GetMenuScreen(modListMenu);
 
                 _sidePanel = SidePanel.Attach(
@@ -286,6 +292,90 @@ namespace CoreGMIC.UI
                     align.AlignText();
                 }
             }
+        }
+
+        private static void AdjustRowSpacingByDescription()
+        {
+            if (_menuRef?.MenuOrder == null || _menuRef.MenuOrder.Count == 0)
+            {
+                return;
+            }
+
+            float cumulativeOffsetY = 0f;
+
+            foreach (GameObjectRow row in _menuRef.MenuOrder)
+            {
+                if (row?.Row == null)
+                {
+                    continue;
+                }
+
+                bool hasActive = false;
+                float rowExtraHeight = 0f;
+
+                foreach (GameObject go in row.Row)
+                {
+                    if (go == null || !go.activeSelf)
+                    {
+                        continue;
+                    }
+
+                    hasActive = true;
+
+                    RectTransform rt = go.GetComponent<RectTransform>();
+                    if (rt != null && cumulativeOffsetY > 0.01f)
+                    {
+                        rt.anchoredPosition = new Vector2(rt.anchoredPosition.x, rt.anchoredPosition.y - cumulativeOffsetY);
+                    }
+
+                    float extra = GetDescriptionExtraHeight(go);
+                    if (extra > rowExtraHeight)
+                    {
+                        rowExtraHeight = extra;
+                    }
+                }
+
+                if (hasActive)
+                {
+                    cumulativeOffsetY += rowExtraHeight;
+                }
+            }
+        }
+
+        private static float GetDescriptionExtraHeight(GameObject go)
+        {
+            Transform descTf = go.transform.Find("Description");
+            if (descTf == null || !descTf.gameObject.activeSelf)
+            {
+                return 0f;
+            }
+
+            Text descText = descTf.GetComponent<Text>();
+            if (descText == null || string.IsNullOrEmpty(descText.text))
+            {
+                return 0f;
+            }
+
+            RectTransform descRt = descText.rectTransform;
+            if (descRt.rect.width <= 1f)
+            {
+                LayoutRebuilder.ForceRebuildLayoutImmediate(descRt);
+            }
+
+            float width = descRt.rect.width > 1f ? descRt.rect.width : descRt.sizeDelta.x;
+            if (width <= 1f)
+            {
+                return 0f;
+            }
+
+            float ppu = descText.pixelsPerUnit > 0f ? descText.pixelsPerUnit : 1f;
+            TextGenerationSettings settings = descText.GetGenerationSettings(new Vector2(width, 0f));
+
+            float actualHeight = descText.cachedTextGeneratorForLayout.GetPreferredHeight(descText.text, settings) / ppu;
+            float singleLineHeight = descText.cachedTextGeneratorForLayout.GetPreferredHeight("A", settings) / ppu;
+
+            float extra = actualHeight - singleLineHeight;
+            return extra > 2f ? (extra + 8f) : 0f;
         }
 
         private static void PopulateSidePanel()
