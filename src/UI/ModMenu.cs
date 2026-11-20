@@ -741,6 +741,7 @@ namespace CoreGMIC.UI
         {
             private readonly float _step;
             private bool _isSnapping;
+            private Text _displayLabel;
 
             public FilterSlider(
                 string name,
@@ -759,16 +760,12 @@ namespace CoreGMIC.UI
             public override GameObjectRow Create(ContentArea c, Menu Instance, bool AddToList = true)
             {
                 GameObjectRow row = base.Create(c, Instance, AddToList);
-                if (slider != null)
+                if (_step > 0f && !wholeNumbers && slider != null)
                 {
-                    if (_step > 0f && !wholeNumbers)
-                    {
-                        slider.onValueChanged.AddListener(OnSliderChangedSnap);
-                    }
-
-                    slider.onValueChanged.AddListener(OnSliderChangedRealign);
+                    slider.onValueChanged.AddListener(OnSliderChangedSnap);
                 }
 
+                SetupIsolatedDisplayLabel();
                 return row;
             }
 
@@ -781,15 +778,7 @@ namespace CoreGMIC.UI
                 }
 
                 base.Update();
-
-                if (label != null)
-                {
-                    FixVerticalAlign align = label.GetComponent<FixVerticalAlign>();
-                    if (align != null)
-                    {
-                        align.AlignText();
-                    }
-                }
+                SyncDisplayLabel();
             }
 
             protected override void UpdateValueLabel()
@@ -819,15 +808,45 @@ namespace CoreGMIC.UI
                 }
             }
 
-            private void OnSliderChangedRealign(float _)
+            private void SetupIsolatedDisplayLabel()
             {
-                if (label != null)
+                Text origLabel = label; // Cache CustomSlider._label onto the hidden stub.
+                if (origLabel == null || _displayLabel != null)
                 {
-                    FixVerticalAlign align = label.GetComponent<FixVerticalAlign>();
-                    if (align != null)
-                    {
-                        align.AlignText();
-                    }
+                    return;
+                }
+
+                GameObject displayGo = UnityEngine.Object.Instantiate(origLabel.gameObject, origLabel.transform.parent);
+                displayGo.name = "Label";
+                displayGo.transform.SetSiblingIndex(origLabel.transform.GetSiblingIndex());
+                _displayLabel = displayGo.GetComponent<Text>();
+
+                origLabel.gameObject.name = "Label_CustomSliderStub";
+                origLabel.enabled = false;
+                LayoutElement stubLayout = origLabel.gameObject.GetComponent<LayoutElement>() ?? origLabel.gameObject.AddComponent<LayoutElement>();
+                stubLayout.ignoreLayout = true;
+
+                FixVerticalAlign stubAlign = origLabel.GetComponent<FixVerticalAlign>();
+                if (stubAlign != null)
+                {
+                    UnityEngine.Object.DestroyImmediate(stubAlign);
+                }
+
+                SyncDisplayLabel();
+            }
+
+            private void SyncDisplayLabel()
+            {
+                if (_displayLabel == null)
+                {
+                    return;
+                }
+
+                _displayLabel.text = Name;
+                FixVerticalAlign align = _displayLabel.GetComponent<FixVerticalAlign>();
+                if (align != null)
+                {
+                    align.AlignText();
                 }
             }
 
