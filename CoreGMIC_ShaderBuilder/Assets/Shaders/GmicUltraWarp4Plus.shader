@@ -23,6 +23,7 @@ Shader "CoreGMIC/UltraWarp4Plus"
     float2 _WarpOffset;
     float _Correlated;
     int _BoundaryMode;
+    float _Bidirectional;
 
     float _Gamma;
     float _HueShiftDeg;
@@ -54,6 +55,20 @@ Shader "CoreGMIC/UltraWarp4Plus"
             result = tex2Dlod(_MainTex, float4(m, 0.0, 0.0));
         }
         return result;
+    }
+
+    float4 SampleWarp(float2 uv, float2 dispPx, float2 tx, int boundaryMode, float bidirectional)
+    {
+        if (bidirectional <= 0.5)
+        {
+            return SampleWithBoundary(uv + dispPx * tx, boundaryMode);
+        }
+
+        float4 sPP = SampleWithBoundary(uv + float2( dispPx.x,  dispPx.y) * tx, boundaryMode);
+        float4 sMP = SampleWithBoundary(uv + float2(-dispPx.x,  dispPx.y) * tx, boundaryMode);
+        float4 sPM = SampleWithBoundary(uv + float2( dispPx.x, -dispPx.y) * tx, boundaryMode);
+        float4 sMM = SampleWithBoundary(uv + float2(-dispPx.x, -dispPx.y) * tx, boundaryMode);
+        return 0.25 * (sPP + sMP + sPM + sMM);
     }
 
     float ApplyNoiseScalar(float val01, float amount, int noiseType, uint seed)
@@ -144,14 +159,14 @@ Shader "CoreGMIC/UltraWarp4Plus"
                 {
                     float ni = length(c.rgb) * 255.0;
                     float2 dispPx = float2((ni - _WarpOffset.x) * _WarpScale.x, (ni - _WarpOffset.y) * _WarpScale.y);
-                    return SampleWithBoundary(i.uv + dispPx * tx, _BoundaryMode);
+                    return SampleWarp(i.uv, dispPx, tx, _BoundaryMode, _Bidirectional);
                 }
 
                 float4 c255 = c * 255.0;
-                float r = SampleWithBoundary(i.uv + float2((c255.r - _WarpOffset.x) * _WarpScale.x, (c255.r - _WarpOffset.y) * _WarpScale.y) * tx, _BoundaryMode).r;
-                float g = SampleWithBoundary(i.uv + float2((c255.g - _WarpOffset.x) * _WarpScale.x, (c255.g - _WarpOffset.y) * _WarpScale.y) * tx, _BoundaryMode).g;
-                float b = SampleWithBoundary(i.uv + float2((c255.b - _WarpOffset.x) * _WarpScale.x, (c255.b - _WarpOffset.y) * _WarpScale.y) * tx, _BoundaryMode).b;
-                float a = SampleWithBoundary(i.uv + float2((c255.a - _WarpOffset.x) * _WarpScale.x, (c255.a - _WarpOffset.y) * _WarpScale.y) * tx, _BoundaryMode).a;
+                float r = SampleWarp(i.uv, float2((c255.r - _WarpOffset.x) * _WarpScale.x, (c255.r - _WarpOffset.y) * _WarpScale.y), tx, _BoundaryMode, _Bidirectional).r;
+                float g = SampleWarp(i.uv, float2((c255.g - _WarpOffset.x) * _WarpScale.x, (c255.g - _WarpOffset.y) * _WarpScale.y), tx, _BoundaryMode, _Bidirectional).g;
+                float b = SampleWarp(i.uv, float2((c255.b - _WarpOffset.x) * _WarpScale.x, (c255.b - _WarpOffset.y) * _WarpScale.y), tx, _BoundaryMode, _Bidirectional).b;
+                float a = SampleWarp(i.uv, float2((c255.a - _WarpOffset.x) * _WarpScale.x, (c255.a - _WarpOffset.y) * _WarpScale.y), tx, _BoundaryMode, _Bidirectional).a;
                 return float4(r, g, b, a);
             }
             ENDCG

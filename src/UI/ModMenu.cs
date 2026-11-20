@@ -158,7 +158,8 @@ namespace CoreGMIC.UI
                     {
                         Name = "CoreGMIC",
                         Anchor = SidePanelAnchor.MiddleRight,
-                        RightInset = 120f
+                        RightInset = 24f,
+                        HideCursors = true
                     });
                 PopulateSidePanel();
 

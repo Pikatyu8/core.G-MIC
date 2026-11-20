@@ -36,7 +36,8 @@ namespace CoreGMIC.Heavy
         private static readonly string[] WarpDirectionChoices =
         {
             "Random (G'MIC)",
-            "Manual"
+            "Manual",
+            "Both Directions"
         };
 
         private static readonly string[] IterColorChoices =
@@ -438,7 +439,7 @@ namespace CoreGMIC.Heavy
                 "Manual horizontal warp direction multiplier.",
                 -1f, 1f, 0.5f,
                 v => _warpDirX = v,
-                isVisible: () => _warpIterations > 0 && _warpDirectionMode == 1,
+                isVisible: () => _warpIterations > 0 && _warpDirectionMode != 0,
                 step: 0.05f));
 
             AddParameter(FilterParameter.Float(
@@ -447,7 +448,7 @@ namespace CoreGMIC.Heavy
                 "Manual vertical warp direction multiplier.",
                 -1f, 1f, 0.5f,
                 v => _warpDirY = v,
-                isVisible: () => _warpIterations > 0 && _warpDirectionMode == 1,
+                isVisible: () => _warpIterations > 0 && _warpDirectionMode != 0,
                 step: 0.05f));
 
             AddParameter(FilterParameter.Float(
@@ -456,7 +457,7 @@ namespace CoreGMIC.Heavy
                 "Manual intensity zero-point bias.",
                 -1f, 1f, 0f,
                 v => _warpOffsetBias = v,
-                isVisible: () => _warpIterations > 0 && _warpDirectionMode == 1,
+                isVisible: () => _warpIterations > 0 && _warpDirectionMode != 0,
                 step: 0.05f));
 
             AddParameter(FilterParameter.Bool(
@@ -843,10 +844,10 @@ namespace CoreGMIC.Heavy
                 {
                     uint baseSalt = 0x2000u + (uint)it * 32u;
 
-                    float dirX = (_warpDirectionMode == 1) ? (_warpDirX * 0.5f) : (Rand01(baseSalt + 0u) - 0.5f);
-                    float dirY = (_warpDirectionMode == 1) ? (_warpDirY * 0.5f) : (Rand01(baseSalt + 1u) - 0.5f);
-                    float biasX = (_warpDirectionMode == 1) ? (_warpOffsetBias * 0.5f) : (Rand01(baseSalt + 2u) - 0.5f);
-                    float biasY = (_warpDirectionMode == 1) ? (_warpOffsetBias * 0.5f) : (Rand01(baseSalt + 3u) - 0.5f);
+                    float dirX = (_warpDirectionMode != 0) ? (_warpDirX * 0.5f) : (Rand01(baseSalt + 0u) - 0.5f);
+                    float dirY = (_warpDirectionMode != 0) ? (_warpDirY * 0.5f) : (Rand01(baseSalt + 1u) - 0.5f);
+                    float biasX = (_warpDirectionMode != 0) ? (_warpOffsetBias * 0.5f) : (Rand01(baseSalt + 2u) - 0.5f);
+                    float biasY = (_warpDirectionMode != 0) ? (_warpOffsetBias * 0.5f) : (Rand01(baseSalt + 3u) - 0.5f);
 
                     float scaleX = _scaleWidth ? (w / 10f) : 1f;
                     float a = intensityFactor * dirX * (_scaleWidth ? scaleX * 0.025f : 1f);
@@ -889,6 +890,7 @@ namespace CoreGMIC.Heavy
                             Material.SetVector("_WarpOffset", new Vector4(c, d, 0f, 0f));
                             Material.SetFloat("_Correlated", corr > 0 ? 1f : 0f);
                             Material.SetInt("_BoundaryMode", bound);
+                            Material.SetFloat("_Bidirectional", _warpDirectionMode == 2 ? 1f : 0f);
                             Graphics.Blit(src, dst, Material, 1);
                         },
                         valueAction: 0,
