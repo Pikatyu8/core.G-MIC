@@ -2,6 +2,7 @@
 #pragma kernel CSReduceMinMax
 #pragma kernel CSReduceChannelMinMax
 #pragma kernel CSSmoothMinMax
+#pragma kernel CSSmoothChannelMinMax
 #pragma kernel CSHistogram
 #pragma kernel CSBuildCdf
 #pragma kernel CSOtsuThreshold
@@ -10,8 +11,10 @@ Texture2D<float4> _InputTex;
 RWStructuredBuffer<uint> _StatsBuf;         // [0]=minUint, [1]=maxUint, [2]=otsuThreshUint
 RWStructuredBuffer<uint> _ChannelStatsBuf;  // [0..2]=minRGB, [3..5]=maxRGB
 RWStructuredBuffer<uint> _HistBuf;          // 256 bins
-RWStructuredBuffer<float2> _TemporalMinMax; // [0]=(minV, maxV)
-RWStructuredBuffer<float4> _CdfHistory;     // 256 elements
+RWStructuredBuffer<float2> _TemporalMinMax;       // [0]=(minV, maxV)
+RWStructuredBuffer<float> _TemporalChannelMinMax; // 6 elements: minRGB, maxRGB
+RWStructuredBuffer<float> _TemporalOtsu;          // [0]=otsuThreshold
+RWStructuredBuffer<float4> _CdfHistory;           // 256 elements
 RWStructuredBuffer<float> _CdfBuffer;       // 256 normalized CDF values [0..1]
 RWTexture2D<float4> _CdfTex;                // 256x1: (cdfNorm, minVal, maxVal, 1)
 
@@ -174,6 +177,22 @@ void CSSmoothMinMax()
     }
 }
 
+[numthreads(6, 1, 1)]
+void CSSmoothChannelMinMax(uint gi : SV_GroupIndex)
+{
+    float raw = asfloat(_ChannelStatsBuf[gi]);
+    if (_ResetHistory > 0)
+    {
+        _TemporalChannelMinMax[gi] = raw;
+    }
+    else
+    {
+        float smoothed = lerp(_TemporalChannelMinMax[gi], raw, _TemporalAlpha);
+        _TemporalChannelMinMax[gi] = smoothed;
+        _ChannelStatsBuf[gi] = asuint(smoothed);
+    }
+}
+
 [numthreads(16, 16, 1)]
 void CSHistogram(uint3 dtid : SV_DispatchThreadID, uint gi : SV_GroupIndex)
 {
@@ -333,5 +352,19 @@ void CSOtsuThreshold()
     float minV = asfloat(_StatsBuf[0]);
     float maxV = asfloat(_StatsBuf[1]);
     float thresh = minV + ((float)bestT / 255.0) * (maxV - minV);
+
+    if (_UseTemporal > 0)
+    {
+        if (_ResetHistory > 0)
+        {
+            _TemporalOtsu[0] = thresh;
+        }
+        else
+        {
+            thresh = lerp(_TemporalOtsu[0], thresh, _TemporalAlpha);
+            _TemporalOtsu[0] = thresh;
+        }
+    }
+
     _StatsBuf[2] = asuint(thresh);
 }

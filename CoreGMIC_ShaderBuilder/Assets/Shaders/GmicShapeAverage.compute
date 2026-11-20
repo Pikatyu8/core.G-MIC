@@ -1,5 +1,6 @@
 #pragma kernel CSCCLInit
 #pragma kernel CSCCLMergeBorders
+#pragma kernel CSCCLCompress
 #pragma kernel CSCCLFlattenAndAccum
 
 Texture2D<float4> _LabelTex;
@@ -159,6 +160,16 @@ void CSCCLMergeBorders(uint3 dtid : SV_DispatchThreadID, uint3 gtid : SV_GroupTh
         if ((uint)round(max(0.0, _LabelTex[pD].r)) == myCol)
             GlobalUnion(idx, pD.y * w + pD.x);
     }
+}
+
+[numthreads(16, 16, 1)]
+void CSCCLCompress(uint3 dtid : SV_DispatchThreadID)
+{
+    if (dtid.x >= (uint)_Width || dtid.y >= (uint)_Height)
+        return;
+
+    uint idx = dtid.y * (uint)_Width + dtid.x;
+    _ParentBuffer[idx] = GlobalFind(idx);
 }
 
 [numthreads(16, 16, 1)]

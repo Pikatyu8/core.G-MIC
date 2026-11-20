@@ -21,6 +21,7 @@ namespace CoreGMIC.Core
         private int _kernelReduceMinMax;
         private int _kernelReduceChannelMinMax;
         private int _kernelSmoothMinMax;
+        private int _kernelSmoothChannelMinMax;
         private int _kernelHistogram;
         private int _kernelBuildCdf;
         private int _kernelOtsuThreshold;
@@ -29,11 +30,15 @@ namespace CoreGMIC.Core
         private ComputeBuffer _channelStatsBuf;
         private ComputeBuffer _histBuf;
         private ComputeBuffer _temporalMinMaxBuf;
+        private ComputeBuffer _temporalChannelMinMaxBuf;
+        private ComputeBuffer _temporalOtsuBuf;
         private ComputeBuffer _cdfHistoryBuf;
         private ComputeBuffer _cdfBuffer;
         private RenderTexture _cdfTex;
 
         private bool _hasMinMaxHistory;
+        private bool _hasChannelMinMaxHistory;
+        private bool _hasOtsuHistory;
         private bool _hasCdfHistory;
 
         public bool IsAvailable => _compute != null && SystemInfo.supportsComputeShaders;
@@ -49,6 +54,7 @@ namespace CoreGMIC.Core
             _kernelReduceMinMax = _compute.FindKernel("CSReduceMinMax");
             _kernelReduceChannelMinMax = _compute.FindKernel("CSReduceChannelMinMax");
             _kernelSmoothMinMax = _compute.FindKernel("CSSmoothMinMax");
+            _kernelSmoothChannelMinMax = _compute.FindKernel("CSSmoothChannelMinMax");
             _kernelHistogram = _compute.FindKernel("CSHistogram");
             _kernelBuildCdf = _compute.FindKernel("CSBuildCdf");
             _kernelOtsuThreshold = _compute.FindKernel("CSOtsuThreshold");
@@ -58,6 +64,8 @@ namespace CoreGMIC.Core
             _histBuf = new ComputeBuffer(256, sizeof(uint));
             _temporalMinMaxBuf = new ComputeBuffer(1, sizeof(float) * 2);
             _temporalMinMaxBuf.SetData(new[] { Vector2.zero });
+            _temporalChannelMinMaxBuf = new ComputeBuffer(6, sizeof(float));
+            _temporalOtsuBuf = new ComputeBuffer(1, sizeof(float));
             _cdfHistoryBuf = new ComputeBuffer(256, sizeof(float) * 4);
             _cdfBuffer = new ComputeBuffer(256, sizeof(float));
             _cdfTex = GpuUtils.CreateRt(256, 1, RenderTextureFormat.ARGBFloat, FilterMode.Bilinear, RenderTextureReadWrite.Linear, randomWrite: true);
@@ -116,7 +124,7 @@ namespace CoreGMIC.Core
             }
         }
 
-        public void ComputeChannelMinMax(RenderTexture input)
+        public void ComputeChannelMinMax(RenderTexture input, float temporalAlpha = 1f, bool resetHistory = false)
         {
             if (!IsAvailable || input == null)
             {
@@ -136,6 +144,17 @@ namespace CoreGMIC.Core
             _compute.SetTexture(_kernelReduceChannelMinMax, "_InputTex", input);
             _compute.SetBuffer(_kernelReduceChannelMinMax, "_ChannelStatsBuf", _channelStatsBuf);
             _compute.Dispatch(_kernelReduceChannelMinMax, groupsX, groupsY, 1);
+
+            if (temporalAlpha < 0.9999f)
+            {
+                bool doReset = resetHistory || !_hasChannelMinMaxHistory;
+                _compute.SetInt("_ResetHistory", doReset ? 1 : 0);
+                _compute.SetFloat("_TemporalAlpha", Mathf.Clamp01(temporalAlpha));
+                _compute.SetBuffer(_kernelSmoothChannelMinMax, "_ChannelStatsBuf", _channelStatsBuf);
+                _compute.SetBuffer(_kernelSmoothChannelMinMax, "_TemporalChannelMinMax", _temporalChannelMinMaxBuf);
+                _compute.Dispatch(_kernelSmoothChannelMinMax, 1, 1, 1);
+                _hasChannelMinMaxHistory = true;
+            }
         }
 
         public void ComputeHistogramCdf(RenderTexture input, GpuStatsOptions options = null)
@@ -178,7 +197,7 @@ namespace CoreGMIC.Core
             }
         }
 
-        public void ComputeOtsuThreshold(RenderTexture input, bool rgbMode = false)
+        public void ComputeOtsuThreshold(RenderTexture input, bool rgbMode = false, float temporalAlpha = 1f, bool resetHistory = false)
         {
             if (!IsAvailable || input == null)
             {
@@ -195,14 +214,29 @@ namespace CoreGMIC.Core
             _compute.SetBuffer(_kernelHistogram, "_HistBuf", _histBuf);
             _compute.Dispatch(_kernelHistogram, groupsX, groupsY, 1);
 
+            bool useTemporal = temporalAlpha < 0.9999f;
+            bool doReset = resetHistory || !_hasOtsuHistory;
+
+            _compute.SetInt("_UseTemporal", useTemporal ? 1 : 0);
+            _compute.SetInt("_ResetHistory", doReset ? 1 : 0);
+            _compute.SetFloat("_TemporalAlpha", Mathf.Clamp01(temporalAlpha));
+
             _compute.SetBuffer(_kernelOtsuThreshold, "_HistBuf", _histBuf);
             _compute.SetBuffer(_kernelOtsuThreshold, "_StatsBuf", _statsBuf);
+            _compute.SetBuffer(_kernelOtsuThreshold, "_TemporalOtsu", _temporalOtsuBuf);
             _compute.Dispatch(_kernelOtsuThreshold, 1, 1, 1);
+
+            if (useTemporal)
+            {
+                _hasOtsuHistory = true;
+            }
         }
 
         public void ResetHistory()
         {
             _hasMinMaxHistory = false;
+            _hasChannelMinMaxHistory = false;
+            _hasOtsuHistory = false;
             _hasCdfHistory = false;
         }
 
@@ -212,10 +246,14 @@ namespace CoreGMIC.Core
             GpuUtils.ReleaseBuffer(ref _channelStatsBuf);
             GpuUtils.ReleaseBuffer(ref _histBuf);
             GpuUtils.ReleaseBuffer(ref _temporalMinMaxBuf);
+            GpuUtils.ReleaseBuffer(ref _temporalChannelMinMaxBuf);
+            GpuUtils.ReleaseBuffer(ref _temporalOtsuBuf);
             GpuUtils.ReleaseBuffer(ref _cdfHistoryBuf);
             GpuUtils.ReleaseBuffer(ref _cdfBuffer);
             GpuUtils.ReleaseRt(ref _cdfTex);
             _hasMinMaxHistory = false;
+            _hasChannelMinMaxHistory = false;
+            _hasOtsuHistory = false;
             _hasCdfHistory = false;
             _compute = null;
         }

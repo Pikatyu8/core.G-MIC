@@ -8,6 +8,7 @@ namespace CoreGMIC.Core
         private ComputeShader _compute;
         private int _kernelInit;
         private int _kernelMerge;
+        private int _kernelCompress;
         private int _kernelFlattenAndAccum;
 
         private ComputeBuffer _parentBuffer;
@@ -23,6 +24,7 @@ namespace CoreGMIC.Core
             _compute = compute;
             _kernelInit = _compute.FindKernel("CSCCLInit");
             _kernelMerge = _compute.FindKernel("CSCCLMergeBorders");
+            _kernelCompress = _compute.FindKernel("CSCCLCompress");
             _kernelFlattenAndAccum = _compute.FindKernel("CSCCLFlattenAndAccum");
         }
 
@@ -75,10 +77,12 @@ namespace CoreGMIC.Core
 
             _compute.SetTexture(_kernelMerge, "_LabelTex", labelTex);
             _compute.SetBuffer(_kernelMerge, "_ParentBuffer", _parentBuffer);
+            _compute.SetBuffer(_kernelCompress, "_ParentBuffer", _parentBuffer);
             int passes = Mathf.Max(1, mergePasses);
             for (int p = 0; p < passes; p++)
             {
                 _compute.Dispatch(_kernelMerge, groupsX, groupsY, 1);
+                _compute.Dispatch(_kernelCompress, groupsX, groupsY, 1);
             }
 
             _compute.SetTexture(_kernelFlattenAndAccum, "_SourceTex", sourceTex);

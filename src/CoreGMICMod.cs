@@ -70,6 +70,8 @@ namespace CoreGMIC
             FilterManager.Register(new ArrayColorFilter());
             FilterManager.Register(new EdgesFilter());
             FilterManager.Register(new GradientNormFilter());
+            FilterManager.Register(new Oldschool8BitsFilter());
+            FilterManager.Register(new IsophotesFilter());
         }
 
         private void OnGameCamerasSceneInit(On.GameCameras.orig_SceneInit orig, GameCameras self)
