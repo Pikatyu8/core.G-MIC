@@ -668,9 +668,14 @@ namespace CoreGMIC.UI
             public override GameObjectRow Create(ContentArea c, Menu Instance, bool AddToList = true)
             {
                 GameObjectRow row = base.Create(c, Instance, AddToList);
-                if (_step > 0f && !wholeNumbers && slider != null)
+                if (slider != null)
                 {
-                    slider.onValueChanged.AddListener(OnSliderChangedSnap);
+                    if (_step > 0f && !wholeNumbers)
+                    {
+                        slider.onValueChanged.AddListener(OnSliderChangedSnap);
+                    }
+
+                    slider.onValueChanged.AddListener(OnSliderChangedRealign);
                 }
 
                 return row;
@@ -720,6 +725,18 @@ namespace CoreGMIC.UI
                 if (align != null)
                 {
                     align.AlignText();
+                }
+            }
+
+            private void OnSliderChangedRealign(float _)
+            {
+                if (label != null)
+                {
+                    FixVerticalAlign align = label.GetComponent<FixVerticalAlign>();
+                    if (align != null)
+                    {
+                        align.AlignText();
+                    }
                 }
             }
 
