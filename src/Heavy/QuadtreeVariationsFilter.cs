@@ -5,17 +5,7 @@ namespace CoreGMIC.Heavy
 {
     public class QuadtreeVariationsFilter : FilterBase
     {
-        private const int PyramidLevels = 7; // 4, 8, 16, 32, 64, 128, 256 px
-
-        private static readonly string[] ColorUniforms =
-        {
-            "_ColorL0", "_ColorL1", "_ColorL2", "_ColorL3", "_ColorL4", "_ColorL5", "_ColorL6"
-        };
-
-        private static readonly string[] TensorUniforms =
-        {
-            "_TensorL0", "_TensorL1", "_TensorL2", "_TensorL3", "_TensorL4", "_TensorL5", "_TensorL6"
-        };
+        private GpuQuadtree _quadtree;
 
         private int _mode = 0;
         private int _precision = 1024;
@@ -30,6 +20,7 @@ namespace CoreGMIC.Heavy
         public override string DisplayName => "Quadtree Variations";
         public override string Description => "Decomposes the frame into adaptive quadtree squares, triangles, or ellipses.";
         public override FilterCategory Category => FilterCategory.Experimental;
+        public override bool IsAvailable => _quadtree != null && _quadtree.IsAvailable;
 
         public QuadtreeVariationsFilter()
         {
@@ -97,73 +88,29 @@ namespace CoreGMIC.Heavy
 
         public override void Initialize()
         {
-            TryCreateMaterial("CoreGMIC/Quadtree");
+            GpuQuadtree.TryCreate(out _quadtree);
         }
 
         public override void Apply(RenderTexture source, RenderTexture destination)
         {
-            int srcW = source.width;
-            int srcH = source.height;
-            int gridW = ((srcW + 255) / 256) * 256;
-            int gridH = ((srcH + 255) / 256) * 256;
+            _quadtree.Apply(
+                source,
+                destination,
+                _mode,
+                _precision,
+                _homogeneity,
+                _outline,
+                _radius1,
+                _radius2,
+                _anisotropy,
+                _onlyLeaves);
+        }
 
-            RenderTextureFormat colorFormat = GpuUtils.ColorFormat;
-            RenderTextureFormat tensorFormat = GpuUtils.FloatFormat;
-
-            RenderTexture[] colorLevels = new RenderTexture[PyramidLevels];
-            RenderTexture[] tensorLevels = new RenderTexture[PyramidLevels];
-
-            try
-            {
-                for (int k = 0; k < PyramidLevels; k++)
-                {
-                    int w = Mathf.Max(1, gridW >> (k + 2));
-                    int h = Mathf.Max(1, gridH >> (k + 2));
-
-                    colorLevels[k] = GpuUtils.GetTempRt(w, h, colorFormat, FilterMode.Point);
-                    tensorLevels[k] = GpuUtils.GetTempRt(w, h, tensorFormat, FilterMode.Point);
-                }
-
-                Material.SetVector("_SourceSize", new Vector4(srcW, srcH, gridW, gridH));
-
-                // Pass 0 & Pass 1: Extract base 4x4 cell statistics and structure tensor.
-                Graphics.Blit(source, colorLevels[0], Material, 0);
-                Graphics.Blit(source, tensorLevels[0], Material, 1);
-
-                // Pass 2: Build exact 2x2 downsample pyramid.
-                for (int k = 1; k < PyramidLevels; k++)
-                {
-                    Graphics.Blit(colorLevels[k - 1], colorLevels[k], Material, 2);
-                    Graphics.Blit(tensorLevels[k - 1], tensorLevels[k], Material, 2);
-                }
-
-                for (int k = 0; k < PyramidLevels; k++)
-                {
-                    Material.SetTexture(ColorUniforms[k], colorLevels[k]);
-                    Material.SetTexture(TensorUniforms[k], tensorLevels[k]);
-                }
-
-                Material.SetInt("_Mode", _mode);
-                Material.SetFloat("_Precision", _precision);
-                Material.SetFloat("_Homogeneity", _homogeneity);
-                Material.SetFloat("_Outline", _outline);
-                Material.SetFloat("_Radius1", _radius1);
-                Material.SetFloat("_Radius2", _radius2);
-                Material.SetFloat("_Anisotropy", _anisotropy);
-                Material.SetFloat("_OnlyLeaves", _onlyLeaves ? 1f : 0f);
-
-                // Pass 3: Squares & Sierpinski; Pass 4: Ellipse Painting.
-                int compositePass = (_mode == 2) ? 4 : 3;
-                Graphics.Blit(source, destination, Material, compositePass);
-            }
-            finally
-            {
-                for (int k = 0; k < PyramidLevels; k++)
-                {
-                    GpuUtils.ReleaseTemp(colorLevels[k]);
-                    GpuUtils.ReleaseTemp(tensorLevels[k]);
-                }
-            }
+        public override void Dispose()
+        {
+            _quadtree?.Dispose();
+            _quadtree = null;
+            base.Dispose();
         }
     }
 }

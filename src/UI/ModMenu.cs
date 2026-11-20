@@ -425,6 +425,19 @@ namespace CoreGMIC.UI
 
             switch (templateParam.Kind)
             {
+                case FilterParamKind.Button:
+                    return new MenuButton(
+                        templateParam.DisplayName,
+                        templateParam.Description,
+                        _ =>
+                        {
+                            FilterParameter param = FilterManager.GetFilterParameter(fId, pKey);
+                            param?.InvokeButton();
+                        },
+                        proceed: false,
+                        Id: elemId
+                    );
+
                 case FilterParamKind.Choice:
                     return new HorizontalOption(
                         templateParam.DisplayName,

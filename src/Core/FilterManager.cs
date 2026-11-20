@@ -146,6 +146,11 @@ namespace CoreGMIC.Core
 
             foreach (FilterParameter param in filter.Parameters)
             {
+                if (param.Kind == FilterParamKind.Button)
+                {
+                    continue;
+                }
+
                 if (saved != null && saved.TryGetValue(param.Key, out float val))
                 {
                     param.Value = val;
@@ -170,6 +175,11 @@ namespace CoreGMIC.Core
 
             foreach (FilterParameter param in filter.Parameters)
             {
+                if (param.Kind == FilterParamKind.Button)
+                {
+                    continue;
+                }
+
                 dict[param.Key] = param.Value;
             }
         }

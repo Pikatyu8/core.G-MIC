@@ -72,6 +72,7 @@ namespace CoreGMIC
             FilterManager.Register(new GradientNormFilter());
             FilterManager.Register(new Oldschool8BitsFilter());
             FilterManager.Register(new IsophotesFilter());
+            FilterManager.Register(new UltraWarp4PlusFilter());
         }
 
         private void OnGameCamerasSceneInit(On.GameCameras.orig_SceneInit orig, GameCameras self)

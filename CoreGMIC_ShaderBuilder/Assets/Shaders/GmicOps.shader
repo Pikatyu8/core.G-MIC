@@ -6,19 +6,23 @@ Shader "CoreGMIC/Ops"
     }
 
     CGINCLUDE
-    #include "GmicCommon.cginc"
+    #include "GmicColorSpaces.cginc"
 
     sampler2D _MainTex;
     float4 _MainTex_TexelSize;
+    sampler2D _BaseTex;
 
     StructuredBuffer<uint> _ParentBuffer;
     StructuredBuffer<uint> _ShapeSumBuffer;
+    StructuredBuffer<uint> _StatsBuf;
 
     int _Width;
     int _Height;
+    int _ChannelMode;
     float _SigmaPx;
     float _JfaStep;
     float _FallbackDistance;
+    float _UseBaseAlpha;
 
     float4 RunGaussian1DRgba(float2 uv, float2 axisTexel)
     {
@@ -169,6 +173,115 @@ Shader "CoreGMIC/Ops"
 
                 float alpha = tex2Dlod(_MainTex, float4(i.uv, 0.0, 0.0)).a;
                 return float4(saturate(avgRgb), alpha);
+            }
+            ENDCG
+        }
+
+        // Pass 5: Normalize [0, 1] using Min/Max from _StatsBuf
+        Pass
+        {
+            CGPROGRAM
+            #pragma target 4.5
+            #pragma vertex vert
+            #pragma fragment fragNormalize
+
+            float4 fragNormalize(v2f i) : SV_Target
+            {
+                float4 src = tex2Dlod(_MainTex, float4(i.uv, 0.0, 0.0));
+                float minV = asfloat(_StatsBuf[0]);
+                float maxV = asfloat(_StatsBuf[1]);
+                float range = maxV - minV;
+
+                float3 outRgb = (range > 1e-5) ? saturate((src.rgb - minV) / range) : saturate(src.rgb);
+                float alpha = (_UseBaseAlpha > 0.5)
+                    ? tex2Dlod(_BaseTex, float4(i.uv, 0.0, 0.0)).a
+                    : src.a;
+                return float4(outRgb, alpha);
+            }
+            ENDCG
+        }
+
+        // Pass 6: Encode sRGB/RGBA -> Target Channel Space
+        Pass
+        {
+            CGPROGRAM
+            #pragma target 4.0
+            #pragma vertex vert
+            #pragma fragment fragEncodeChannelSpace
+
+            float4 fragEncodeChannelSpace(v2f i) : SV_Target
+            {
+                float4 src = tex2D(_MainTex, i.uv);
+                return EncodeChannelSpace(src, _ChannelMode);
+            }
+            ENDCG
+        }
+
+        // Pass 7: Decode & Merge Active Channel Back to RGBA
+        Pass
+        {
+            CGPROGRAM
+            #pragma target 4.0
+            #pragma vertex vert
+            #pragma fragment fragDecodeAndMergeChannel
+
+            float4 fragDecodeAndMergeChannel(v2f i) : SV_Target
+            {
+                float4 proc = tex2D(_MainTex, i.uv);
+                float4 orig = tex2D(_BaseTex, i.uv);
+                return DecodeAndMergeChannel(orig, proc, _ChannelMode);
+            }
+            ENDCG
+        }
+
+        // Pass 8: Extract Channel Subset into RGB for Generic Single/Multi-Channel Ops
+        Pass
+        {
+            CGPROGRAM
+            #pragma target 4.0
+            #pragma vertex vert
+            #pragma fragment fragExtractChannelSubset
+
+            float4 fragExtractChannelSubset(v2f i) : SV_Target
+            {
+                float4 enc = tex2D(_MainTex, i.uv);
+                return ExtractChannelSubset(enc, _ChannelMode);
+            }
+            ENDCG
+        }
+
+        // Pass 9: Repack Subset & Decode Back to RGBA
+        Pass
+        {
+            CGPROGRAM
+            #pragma target 4.0
+            #pragma vertex vert
+            #pragma fragment fragRepackSubsetAndDecode
+
+            float4 fragRepackSubsetAndDecode(v2f i) : SV_Target
+            {
+                float4 proc = tex2D(_MainTex, i.uv);
+                float4 orig = tex2D(_BaseTex, i.uv);
+                return RepackSubsetAndDecode(orig, proc, _ChannelMode);
+            }
+            ENDCG
+        }
+
+        // Pass 10: Clamp/Cut [0, 1] with Optional Original Alpha
+        Pass
+        {
+            CGPROGRAM
+            #pragma target 4.0
+            #pragma vertex vert
+            #pragma fragment fragCut01
+
+            float4 fragCut01(v2f i) : SV_Target
+            {
+                float4 src = saturate(tex2D(_MainTex, i.uv));
+                float alpha = (_UseBaseAlpha > 0.5)
+                    ? tex2D(_BaseTex, i.uv).a
+                    : src.a;
+                return float4(src.rgb, alpha);
             }
             ENDCG
         }

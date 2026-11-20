@@ -8,7 +8,8 @@ namespace CoreGMIC.Core
         Float,
         Int,
         Bool,
-        Choice
+        Choice,
+        Button
     }
 
     public class FilterParameter
@@ -81,7 +82,18 @@ namespace CoreGMIC.Core
 
         public void ForceApply()
         {
-            _onChanged?.Invoke(_value);
+            if (Kind != FilterParamKind.Button)
+            {
+                _onChanged?.Invoke(_value);
+            }
+        }
+
+        public void InvokeButton()
+        {
+            if (Kind == FilterParamKind.Button)
+            {
+                _onChanged?.Invoke(0f);
+            }
         }
 
         private float Normalize(float raw)
@@ -147,6 +159,17 @@ namespace CoreGMIC.Core
                 0f, maxIdx, defaultIndex,
                 onChanged != null ? v => onChanged(Mathf.RoundToInt(v)) : null,
                 choices, isVisible);
+        }
+
+        public static FilterParameter Button(
+            string key, string displayName, string description,
+            Action onPressed, Func<bool> isVisible = null)
+        {
+            return new FilterParameter(
+                key, displayName, description, FilterParamKind.Button,
+                0f, 0f, 0f,
+                onPressed != null ? _ => onPressed() : null,
+                null, isVisible);
         }
     }
 }

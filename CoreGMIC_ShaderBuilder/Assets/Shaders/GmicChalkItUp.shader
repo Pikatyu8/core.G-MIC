@@ -12,8 +12,6 @@ Shader "CoreGMIC/ChalkItUp"
     sampler2D _AuxTex;
     sampler2D _AvgTex;
     sampler2D _TensorTex;
-    sampler2D _GradTex;
-    sampler2D _JfaTex;
     sampler2D _BaseTex;
 
     float _Sigma;
@@ -21,9 +19,7 @@ Shader "CoreGMIC/ChalkItUp"
     float _Anisotropy;
     float _Dl;
     float _ColorMul;
-    float _JfaStep;
 
-    int _ChannelMode;
     int _MorphoSize;
     int _MorphoAction;
     float _MorphoIsDilate;
@@ -34,258 +30,7 @@ Shader "CoreGMIC/ChalkItUp"
     #define GMIC_USE_HASH 1
     #define GMIC_USE_SOBEL 1
     #define GMIC_USE_TENSOR 1
-    #include "GmicCommon.cginc"
-
-    // --- Color Space Helpers ---
-
-    float3 SrgbToLinear(float3 c)
-    {
-        float3 lo = c / 12.92;
-        float3 hi = pow(max((c + 0.055) / 1.055, 0.0), 2.4);
-        return float3(
-            c.r <= 0.04045 ? lo.r : hi.r,
-            c.g <= 0.04045 ? lo.g : hi.g,
-            c.b <= 0.04045 ? lo.b : hi.b
-        );
-    }
-
-    float3 LinearToSrgb(float3 c)
-    {
-        c = max(c, 0.0);
-        float3 lo = c * 12.92;
-        float3 hi = 1.055 * pow(max(c, 1e-6), 1.0 / 2.4) - 0.055;
-        return saturate(float3(
-            c.r <= 0.0031308 ? lo.r : hi.r,
-            c.g <= 0.0031308 ? lo.g : hi.g,
-            c.b <= 0.0031308 ? lo.b : hi.b
-        ));
-    }
-
-    float3 RgbToYCbCr(float3 c)
-    {
-        float y = 0.299 * c.r + 0.587 * c.g + 0.114 * c.b;
-        float cb = 0.5 + (-0.168736 * c.r - 0.331264 * c.g + 0.5 * c.b);
-        float cr = 0.5 + ( 0.5 * c.r - 0.418688 * c.g - 0.081312 * c.b);
-        return saturate(float3(y, cb, cr));
-    }
-
-    float3 YCbCrToRgb(float3 ycc)
-    {
-        float y = ycc.x;
-        float cb = ycc.y - 0.5;
-        float cr = ycc.z - 0.5;
-        float r = y + 1.402 * cr;
-        float g = y - 0.344136 * cb - 0.714136 * cr;
-        float b = y + 1.772 * cb;
-        return saturate(float3(r, g, b));
-    }
-
-    float LabF(float t)
-    {
-        return (t > 0.008856) ? pow(max(t, 1e-6), 1.0 / 3.0) : (7.787 * t + 16.0 / 116.0);
-    }
-
-    float LabInvF(float t)
-    {
-        return (t > 0.20689655) ? (t * t * t) : ((t - 16.0 / 116.0) / 7.787);
-    }
-
-    float3 RgbToLab01(float3 srgb)
-    {
-        float3 lin = SrgbToLinear(saturate(srgb));
-        float X = (0.4124564 * lin.r + 0.3575761 * lin.g + 0.1804375 * lin.b) / 0.95047;
-        float Y = (0.2126729 * lin.r + 0.7151522 * lin.g + 0.0721750 * lin.b) / 1.00000;
-        float Z = (0.0193339 * lin.r + 0.1191920 * lin.g + 0.9503041 * lin.b) / 1.08883;
-
-        float fx = LabF(X);
-        float fy = LabF(Y);
-        float fz = LabF(Z);
-
-        float L = (116.0 * fy - 16.0) / 100.0;
-        float a = (500.0 * (fx - fy) + 128.0) / 255.0;
-        float b = (200.0 * (fy - fz) + 128.0) / 255.0;
-        return saturate(float3(L, a, b));
-    }
-
-    float3 Lab01ToRgb(float3 lab01)
-    {
-        float L = lab01.x * 100.0;
-        float a = lab01.y * 255.0 - 128.0;
-        float b = lab01.z * 255.0 - 128.0;
-
-        float fy = (L + 16.0) / 116.0;
-        float fx = a / 500.0 + fy;
-        float fz = fy - b / 200.0;
-
-        float X = 0.95047 * LabInvF(fx);
-        float Y = 1.00000 * LabInvF(fy);
-        float Z = 1.08883 * LabInvF(fz);
-
-        float r =  3.2404542 * X - 1.5371385 * Y - 0.4985314 * Z;
-        float g = -0.9692660 * X + 1.8760108 * Y + 0.0415560 * Z;
-        float bc = 0.0556434 * X - 0.2040259 * Y + 1.0572252 * Z;
-        return LinearToSrgb(float3(r, g, bc));
-    }
-
-    float3 RgbToLch01(float3 srgb)
-    {
-        float3 lab01 = RgbToLab01(srgb);
-        float a = lab01.y * 255.0 - 128.0;
-        float b = lab01.z * 255.0 - 128.0;
-        float C = saturate(sqrt(a * a + b * b) / 181.0);
-        float H = (abs(a) < 1e-5 && abs(b) < 1e-5) ? 0.0 : frac(atan2(b, a) / 6.28318530718);
-        return float3(lab01.x, C, H);
-    }
-
-    float3 Lch01ToRgb(float3 lch01)
-    {
-        float C = lch01.y * 181.0;
-        float angle = lch01.z * 6.28318530718;
-        float sA, cA;
-        sincos(angle, sA, cA);
-        float a01 = saturate((C * cA + 128.0) / 255.0);
-        float b01 = saturate((C * sA + 128.0) / 255.0);
-        return Lab01ToRgb(float3(lch01.x, a01, b01));
-    }
-
-    float3 RgbToHsv(float3 c)
-    {
-        float cmax = max(c.r, max(c.g, c.b));
-        float cmin = min(c.r, min(c.g, c.b));
-        float d = cmax - cmin;
-        float h = 0.0;
-        if (d >= 1e-5)
-        {
-            if (cmax == c.r) h = ((c.g - c.b) / d + (c.g < c.b ? 6.0 : 0.0)) / 6.0;
-            else if (cmax == c.g) h = ((c.b - c.r) / d + 2.0) / 6.0;
-            else h = ((c.r - c.g) / d + 4.0) / 6.0;
-        }
-        float s = (cmax > 1e-5) ? (d / cmax) : 0.0;
-        return float3(frac(h), saturate(s), saturate(cmax));
-    }
-
-    float3 HsvToRgb(float3 hsv)
-    {
-        float h = frac(hsv.x) * 6.0;
-        float s = saturate(hsv.y);
-        float v = saturate(hsv.z);
-        float f = frac(h);
-        float p = v * (1.0 - s);
-        float q = v * (1.0 - s * f);
-        float t = v * (1.0 - s * (1.0 - f));
-        if (h < 1.0) return float3(v, t, p);
-        if (h < 2.0) return float3(q, v, p);
-        if (h < 3.0) return float3(p, v, t);
-        if (h < 4.0) return float3(p, q, v);
-        if (h < 5.0) return float3(t, p, v);
-        return float3(v, p, q);
-    }
-
-
-    float3 RgbToHsi(float3 c)
-    {
-        float sum = c.r + c.g + c.b;
-        float inten = sum / 3.0;
-        float cmin = min(c.r, min(c.g, c.b));
-        float s = (sum > 1e-5) ? (1.0 - 3.0 * cmin / sum) : 0.0;
-        float num = 0.5 * ((c.r - c.g) + (c.r - c.b));
-        float den = sqrt(max(1e-10, (c.r - c.g) * (c.r - c.g) + (c.r - c.b) * (c.g - c.b)));
-        float theta = acos(clamp(num / den, -1.0, 1.0)) / 6.28318530718;
-        float h = (c.b <= c.g) ? theta : (1.0 - theta);
-        return float3(frac(h), saturate(s), saturate(inten));
-    }
-
-    float3 HsiToRgb(float3 hsi)
-    {
-        float h = frac(hsi.x) * 6.28318530718;
-        float s = saturate(hsi.y);
-        float inten = saturate(hsi.z);
-        float pi23 = 2.09439510239;
-        float pi43 = 4.18879020479;
-        float r, g, b;
-        if (h < pi23)
-        {
-            b = inten * (1.0 - s);
-            r = inten * (1.0 + (s * cos(h)) / max(1e-4, cos(1.0471975512 - h)));
-            g = 3.0 * inten - (r + b);
-        }
-        else if (h < pi43)
-        {
-            float hp = h - pi23;
-            r = inten * (1.0 - s);
-            g = inten * (1.0 + (s * cos(hp)) / max(1e-4, cos(1.0471975512 - hp)));
-            b = 3.0 * inten - (r + g);
-        }
-        else
-        {
-            float hp = h - pi43;
-            g = inten * (1.0 - s);
-            b = inten * (1.0 + (s * cos(hp)) / max(1e-4, cos(1.0471975512 - hp)));
-            r = 3.0 * inten - (g + b);
-        }
-        return saturate(float3(r, g, b));
-    }
-
-    float4 RgbToCmyk(float3 c)
-    {
-        float k = 1.0 - max(c.r, max(c.g, c.b));
-        float denom = 1.0 - k;
-        if (denom < 1e-5) return float4(0.0, 0.0, 0.0, 1.0);
-        return saturate(float4((denom - c.r) / denom, (denom - c.g) / denom, (denom - c.b) / denom, k));
-    }
-
-    float3 CmykToRgb(float4 cmyk)
-    {
-        float ik = 1.0 - saturate(cmyk.w);
-        return saturate((1.0 - saturate(cmyk.xyz)) * ik);
-    }
-
-    float4 EncodeChannelSpace(float3 srgb, int mode)
-    {
-        srgb = saturate(srgb);
-        if (mode <= 6)  return float4(srgb, 1.0);
-        if (mode <= 10) return float4(SrgbToLinear(srgb), 1.0);
-        if (mode <= 14) return float4(RgbToYCbCr(srgb), 1.0);
-        if (mode == 15) return float4(RgbToYCbCr(srgb.grb), 1.0);
-        if (mode <= 19) return float4(RgbToLab01(srgb), 1.0);
-        if (mode <= 22) return float4(RgbToLch01(srgb), 1.0);
-        if (mode <= 25) return float4(RgbToHsv(srgb), 1.0);
-        if (mode == 26) return float4(RgbToHsi(srgb), 1.0);
-        if (mode == 27) return float4(RgbToHsl(srgb), 1.0);
-        return RgbToCmyk(srgb);
-    }
-
-    float3 DecodeAndMergeChannel(float3 origRgb, float4 procEnc, int mode)
-    {
-        if (mode == 6) return saturate(origRgb);
-
-        float4 m = EncodeChannelSpace(origRgb, mode);
-
-        if (mode == 0 || mode == 1 || mode == 2 || mode == 7)
-            m.rgb = procEnc.rgb;
-        else if (mode == 3 || mode == 8 || mode == 11 || mode == 16 || mode == 23 || mode == 28)
-            m.r = procEnc.r;
-        else if (mode == 4 || mode == 9 || mode == 13 || mode == 18 || mode == 21 || mode == 24 || mode == 29)
-            m.g = procEnc.g;
-        else if (mode == 5 || mode == 10 || mode == 14 || mode == 15 || mode == 19 || mode == 22 || mode == 25 || mode == 26 || mode == 27 || mode == 30)
-            m.b = procEnc.b;
-        else if (mode == 12 || mode == 17 || mode == 20)
-            m.gb = procEnc.gb;
-        else if (mode == 31)
-            m.a = procEnc.a;
-
-        if (mode <= 6)  return saturate(m.rgb);
-        if (mode <= 10) return LinearToSrgb(m.rgb);
-        if (mode <= 14) return YCbCrToRgb(m.rgb);
-        if (mode == 15) return YCbCrToRgb(m.rgb).grb;
-        if (mode <= 19) return Lab01ToRgb(m.rgb);
-        if (mode <= 22) return Lch01ToRgb(m.rgb);
-        if (mode <= 25) return HsvToRgb(m.rgb);
-        if (mode == 26) return HsiToRgb(m.rgb);
-        if (mode == 27) return HslToRgb(m.rgb);
-        return CmykToRgb(m);
-    }
-
+    #include "GmicColorSpaces.cginc"
     ENDCG
 
     SubShader
@@ -310,7 +55,7 @@ Shader "CoreGMIC/ChalkItUp"
             ENDCG
         }
 
-        // Pass 1: Local 13x1 Horizontal Min/Max on .r -> RG
+        // Pass 1: Local 13x1 Horizontal Min/Max -> RG
         Pass
         {
             CGPROGRAM
@@ -336,7 +81,7 @@ Shader "CoreGMIC/ChalkItUp"
             ENDCG
         }
 
-        // Pass 2: Local 1x13 Vertical Min/Max on .rg -> RG
+        // Pass 2: Local 1x13 Vertical Min/Max -> RG
         Pass
         {
             CGPROGRAM
@@ -555,7 +300,6 @@ Shader "CoreGMIC/ChalkItUp"
                 float3 sumRgb = center.rgb;
                 float sumW = 1.0;
 
-                // Forward streamline (10 curved steps)
                 float2 posF = i.uv;
                 float2 curTF = t0;
                 [unroll]
@@ -579,7 +323,6 @@ Shader "CoreGMIC/ChalkItUp"
                     sumW += w;
                 }
 
-                // Backward streamline (10 curved steps)
                 float2 posB = i.uv;
                 float2 curTB = -t0;
                 [unroll]
@@ -603,7 +346,6 @@ Shader "CoreGMIC/ChalkItUp"
                     sumW += w;
                 }
 
-                // Lateral diffusion controlled by (1 - Anisotropy) and edge stopping
                 float lateralScale = (1.0 - anisoNorm) * pow(1.0 + centerEdge, -sharpEdge * 1.5);
                 if (lateralScale > 0.02)
                 {
@@ -641,7 +383,7 @@ Shader "CoreGMIC/ChalkItUp"
             ENDCG
         }
 
-        // Pass 12: Scale a,b by _ColorMul and blur chroma horizontally (0.5%)
+        // Pass 12: Scale a,b by _ColorMul and blur chroma horizontally
         Pass
         {
             CGPROGRAM
@@ -720,184 +462,7 @@ Shader "CoreGMIC/ChalkItUp"
             ENDCG
         }
 
-        // Pass 15: Gaussian Blur Sigma=1.0 Horizontal (for watershed)
-        Pass
-        {
-            CGPROGRAM
-            #pragma target 4.0
-            #pragma vertex vert
-            #pragma fragment fragBlur1H
-
-            float4 fragBlur1H(v2f i) : SV_Target
-            {
-                float tx = _MainTex_TexelSize.x * 1.4;
-                float4 acc = tex2Dlod(_MainTex, float4(i.uv, 0.0, 0.0)) * 0.38774;
-                acc += tex2Dlod(_MainTex, float4(saturate(i.uv + float2( tx, 0.0)), 0.0, 0.0)) * 0.24477;
-                acc += tex2Dlod(_MainTex, float4(saturate(i.uv - float2( tx, 0.0)), 0.0, 0.0)) * 0.24477;
-                acc += tex2Dlod(_MainTex, float4(saturate(i.uv + float2(2.0 * tx, 0.0)), 0.0, 0.0)) * 0.06136;
-                acc += tex2Dlod(_MainTex, float4(saturate(i.uv - float2(2.0 * tx, 0.0)), 0.0, 0.0)) * 0.06136;
-                return acc;
-            }
-            ENDCG
-        }
-
-        // Pass 16: Gaussian Blur Sigma=1.0 Vertical (for watershed)
-        Pass
-        {
-            CGPROGRAM
-            #pragma target 4.0
-            #pragma vertex vert
-            #pragma fragment fragBlur1V
-
-            float4 fragBlur1V(v2f i) : SV_Target
-            {
-                float ty = _MainTex_TexelSize.y;
-                float4 acc = tex2Dlod(_MainTex, float4(i.uv, 0.0, 0.0)) * 0.38774;
-                acc += tex2Dlod(_MainTex, float4(saturate(i.uv + float2(0.0,  ty)), 0.0, 0.0)) * 0.24477;
-                acc += tex2Dlod(_MainTex, float4(saturate(i.uv - float2(0.0,  ty)), 0.0, 0.0)) * 0.24477;
-                acc += tex2Dlod(_MainTex, float4(saturate(i.uv + float2(0.0, 2.0 * ty)), 0.0, 0.0)) * 0.06136;
-                acc += tex2Dlod(_MainTex, float4(saturate(i.uv - float2(0.0, 2.0 * ty)), 0.0, 0.0)) * 0.06136;
-                return acc;
-            }
-            ENDCG
-        }
-
-        // Pass 17: Sobel Gradient Norm
-        Pass
-        {
-            CGPROGRAM
-            #pragma target 4.0
-            #pragma vertex vert
-            #pragma fragment fragGradientNorm
-
-            float4 fragGradientNorm(v2f i) : SV_Target
-            {
-                float3 dx, dy;
-                ComputeSobelGradients(i.uv, _MainTex_TexelSize.xy, dx, dy);
-                float gn = sqrt(dot(dx, dx) + dot(dy, dy));
-                return float4(gn, gn, gn, 1.0);
-            }
-            ENDCG
-        }
-
-        // Pass 18: Watershed Seed Init (local minima below threshold + sparse flat grid seeds)
-        Pass
-        {
-            CGPROGRAM
-            #pragma target 4.0
-            #pragma vertex vert
-            #pragma fragment fragWatershedSeedInit
-
-            float4 fragWatershedSeedInit(v2f i) : SV_Target
-            {
-                float2 tx = _MainTex_TexelSize.xy;
-                float gn = tex2Dlod(_MainTex, float4(i.uv, 0.0, 0.0)).r;
-                float gL = tex2Dlod(_MainTex, float4(saturate(i.uv - float2(tx.x, 0.0)), 0.0, 0.0)).r;
-                float gR = tex2Dlod(_MainTex, float4(saturate(i.uv + float2(tx.x, 0.0)), 0.0, 0.0)).r;
-                float gD = tex2Dlod(_MainTex, float4(saturate(i.uv - float2(0.0, tx.y)), 0.0, 0.0)).r;
-                float gU = tex2Dlod(_MainTex, float4(saturate(i.uv + float2(0.0, tx.y)), 0.0, 0.0)).r;
-
-                float threshold = 10.0 / 255.0;
-                bool strictMin = (gn < threshold) && (gn < gL) && (gn < gR) && (gn < gD) && (gn < gU);
-
-                int2 px = (int2)floor(i.uv * _MainTex_TexelSize.zw);
-                bool flatGrid = (gn < 0.002) && ((px.x % 24) == 0) && ((px.y % 24) == 0);
-
-                if (strictMin || flatGrid)
-                {
-                    return float4(i.uv.x, i.uv.y, gn, 1.0);
-                }
-                return float4(-1.0, -1.0, 1e6, 0.0);
-            }
-            ENDCG
-        }
-
-        // Pass 19: Watershed Jump Flooding Step (edge-barrier geodesic cost)
-        Pass
-        {
-            CGPROGRAM
-            #pragma target 4.0
-            #pragma vertex vert
-            #pragma fragment fragWatershedJfa
-
-            float4 fragWatershedJfa(v2f i) : SV_Target
-            {
-                float2 stepUv = _MainTex_TexelSize.xy * _JfaStep;
-                float2 sizePx = _MainTex_TexelSize.zw;
-                float gCur = tex2Dlod(_GradTex, float4(i.uv, 0.0, 0.0)).r;
-
-                float4 best = float4(-1.0, -1.0, 1e6, 0.0);
-                float bestCost = 1e20;
-
-                [unroll]
-                for (int dy = -1; dy <= 1; dy++)
-                {
-                    [unroll]
-                    for (int dx = -1; dx <= 1; dx++)
-                    {
-                        float2 suv = i.uv + float2((float)dx, (float)dy) * stepUv;
-                        if (suv.x < 0.0 || suv.x > 1.0 || suv.y < 0.0 || suv.y > 1.0)
-                            continue;
-
-                        float4 cand = tex2Dlod(_MainTex, float4(suv, 0.0, 0.0));
-                        if (cand.a < 0.5)
-                            continue;
-
-                        float dist = length((i.uv - cand.xy) * sizePx);
-                        float gMid = tex2Dlod(_GradTex, float4(0.5 * (i.uv + cand.xy), 0.0, 0.0)).r;
-                        float barrier = max(gMid, 0.5 * (gCur + cand.z));
-                        float cost = dist + barrier * 320.0 + cand.z * 25.0;
-
-                        if (cost < bestCost)
-                        {
-                            bestCost = cost;
-                            best = cand;
-                        }
-                    }
-                }
-
-                return best;
-            }
-            ENDCG
-        }
-
-        // Pass 20: Watershed Resolve (sample blurred image at winning seed UV)
-        Pass
-        {
-            CGPROGRAM
-            #pragma target 4.0
-            #pragma vertex vert
-            #pragma fragment fragWatershedResolve
-
-            float4 fragWatershedResolve(v2f i) : SV_Target
-            {
-                float4 seed = tex2Dlod(_JfaTex, float4(i.uv, 0.0, 0.0));
-                if (seed.a > 0.5)
-                {
-                    return tex2Dlod(_MainTex, float4(saturate(seed.xy), 0.0, 0.0));
-                }
-                return tex2D(_MainTex, i.uv);
-            }
-            ENDCG
-        }
-
-        // Pass 21: Encode sRGB -> Target Channel Space
-        Pass
-        {
-            CGPROGRAM
-            #pragma target 4.0
-            #pragma vertex vert
-            #pragma fragment fragEncodeChannelSpace
-
-            float4 fragEncodeChannelSpace(v2f i) : SV_Target
-            {
-                float4 src = tex2D(_MainTex, i.uv);
-                return EncodeChannelSpace(src.rgb, _ChannelMode);
-            }
-            ENDCG
-        }
-
-        // Pass 22: Morpho Square Horizontal (width _MorphoSize)
+        // Pass 15: Morpho Square Horizontal (width _MorphoSize)
         Pass
         {
             CGPROGRAM
@@ -922,7 +487,7 @@ Shader "CoreGMIC/ChalkItUp"
             ENDCG
         }
 
-        // Pass 23: Morpho Square Vertical (height _MorphoSize)
+        // Pass 16: Morpho Square Vertical (height _MorphoSize)
         Pass
         {
             CGPROGRAM
@@ -947,7 +512,7 @@ Shader "CoreGMIC/ChalkItUp"
             ENDCG
         }
 
-        // Pass 24: Morpho 3x3 Diamond (cross) step for octagonal morphology
+        // Pass 17: Morpho 3x3 Diamond (cross) step for octagonal morphology
         Pass
         {
             CGPROGRAM
@@ -973,7 +538,7 @@ Shader "CoreGMIC/ChalkItUp"
             ENDCG
         }
 
-        // Pass 25: Morpho Combine Action (0..7) + Optional Invert
+        // Pass 18: Morpho Combine Action (0..7) + Optional Invert
         Pass
         {
             CGPROGRAM
@@ -989,12 +554,10 @@ Shader "CoreGMIC/ChalkItUp"
                 float4 res;
                 if (_MorphoAction == 4 || _MorphoAction == 6)
                 {
-                    // Original - Erosion / Original - Opening
                     res = saturate(orig - proc);
                 }
                 else if (_MorphoAction == 5 || _MorphoAction == 7)
                 {
-                    // Dilation - Original / Closing - Original
                     res = saturate(proc - orig);
                 }
                 else
@@ -1012,24 +575,7 @@ Shader "CoreGMIC/ChalkItUp"
             ENDCG
         }
 
-        // Pass 26: Decode & Merge Active Channel Back to sRGB
-        Pass
-        {
-            CGPROGRAM
-            #pragma target 4.0
-            #pragma vertex vert
-            #pragma fragment fragDecodeAndMerge
-
-            float4 fragDecodeAndMerge(v2f i) : SV_Target
-            {
-                float4 proc = tex2D(_MainTex, i.uv);
-                float4 orig = tex2D(_BaseTex, i.uv);
-                return float4(DecodeAndMergeChannel(orig.rgb, proc, _ChannelMode), orig.a);
-            }
-            ENDCG
-        }
-
-        // Pass 27: Deterministic Pixel Spread
+        // Pass 19: Deterministic Pixel Spread
         Pass
         {
             CGPROGRAM

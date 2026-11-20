@@ -17,43 +17,15 @@ namespace CoreGMIC.Heavy
             "Closing - Orig"
         };
 
-        private static readonly string[] ChannelChoices =
-        {
-            "All",
-            "RGBA [all]",
-            "RGB [all]",
-            "RGB [red]",
-            "RGB [green]",
-            "RGB [blue]",
-            "RGBA [alpha]",
-            "Linear RGB [all]",
-            "Linear RGB [red]",
-            "Linear RGB [green]",
-            "Linear RGB [blue]",
-            "YCbCr [Y]",
-            "YCbCr [CbCr]",
-            "YCbCr [Cb]",
-            "YCbCr [Cr]",
-            "YCbCr [Cg]",
-            "Lab [L]",
-            "Lab [ab]",
-            "Lab [a]",
-            "Lab [b]",
-            "Lch [ch]",
-            "Lch [c]",
-            "Lch [h]",
-            "HSV [H]",
-            "HSV [S]",
-            "HSV [V]",
-            "HSI [I]",
-            "HSL [L]",
-            "CMYK [C]",
-            "CMYK [M]",
-            "CMYK [Y]",
-            "CMYK [K]"
-        };
+        private static readonly string[] LegacyChannelChoices;
 
-        private static readonly int[] JfaSteps = { 64, 32, 16, 8, 4, 2, 1 };
+        static ChalkItUpFilter()
+        {
+            LegacyChannelChoices = new string[32];
+            System.Array.Copy(GpuChannelOps.ChannelChoices, LegacyChannelChoices, 32);
+        }
+
+        private GpuWatershed _watershed;
 
         private int _abstraction = 5;
         private float _detailsScale = 2.5f;
@@ -75,6 +47,8 @@ namespace CoreGMIC.Heavy
         public override string DisplayName => "Chalk It Up";
         public override string Description => "Chalk-and-pastel stylization with local normalization, JFA watershed, morphology, and spread.";
         public override FilterCategory Category => FilterCategory.Heavy;
+        public override bool IsAvailable =>
+            base.IsAvailable && GpuChannelOps.IsAvailable && _watershed != null && _watershed.IsAvailable;
 
         public ChalkItUpFilter()
         {
@@ -146,7 +120,7 @@ namespace CoreGMIC.Heavy
                 "channel_morpho",
                 "Morpho Channel",
                 "Color space/channels used for morphology.",
-                ChannelChoices,
+                LegacyChannelChoices,
                 7,
                 v => _channelMorpho = v));
 
@@ -168,14 +142,19 @@ namespace CoreGMIC.Heavy
                 "channel_spread",
                 "Spread Channel",
                 "Color space/channels used for spread.",
-                ChannelChoices,
+                LegacyChannelChoices,
                 7,
                 v => _channelSpread = v));
         }
 
         public override void Initialize()
         {
-            TryCreateMaterial("CoreGMIC/ChalkItUp");
+            if (!TryCreateMaterial("CoreGMIC/ChalkItUp"))
+            {
+                return;
+            }
+
+            GpuWatershed.TryCreate(out _watershed);
         }
 
         public override void Apply(RenderTexture source, RenderTexture destination)
@@ -195,8 +174,6 @@ namespace CoreGMIC.Heavy
             RenderTexture extraA = null;
             RenderTexture qA = null;
             RenderTexture qB = null;
-            RenderTexture jfaA = null;
-            RenderTexture jfaB = null;
 
             try
             {
@@ -209,23 +186,22 @@ namespace CoreGMIC.Heavy
                 RenderTexture curr = source;
                 RenderTexture NextColorRt(RenderTexture c) => (c == rtA) ? rtB : rtA;
 
-                // 1. fx_normalize_local loop on YCbCr luminance (channel 11).
+                // 1. fx_normalize_local loop on YCbCr luminance.
                 if (_abstraction > 0)
                 {
                     qA = GpuUtils.GetTempRt(qw, qh, colorFormat);
                     qB = GpuUtils.GetTempRt(qw, qh, colorFormat);
 
-                    Graphics.Blit(curr, rtA, Material, 0); // Pass 0: RgbToYCbCr
+                    Graphics.Blit(curr, rtA, Material, 0);
                     curr = rtA;
 
                     for (int iter = 0; iter < _abstraction; iter++)
                     {
-                        Graphics.Blit(curr, auxA, Material, 1); // Pass 1: LocalMinMaxH (radius 6 -> 13x13)
-                        Graphics.Blit(auxA, auxB, Material, 2); // Pass 2: LocalMinMaxV
-                        Graphics.Blit(auxB, auxA, Material, 3); // Pass 3: BlurSigma5H
-                        Graphics.Blit(auxA, auxB, Material, 4); // Pass 4: BlurSigma5V -> (E_s, D_s)
+                        Graphics.Blit(curr, auxA, Material, 1);
+                        Graphics.Blit(auxA, auxB, Material, 2);
+                        Graphics.Blit(auxB, auxA, Material, 3);
+                        Graphics.Blit(auxA, auxB, Material, 4);
 
-                        // Quarter-res sigma=5 blur approximates sigma=20 at full resolution.
                         Graphics.Blit(curr, qA);
                         Graphics.Blit(qA, qB, Material, 3);
                         Graphics.Blit(qB, qA, Material, 4);
@@ -233,12 +209,12 @@ namespace CoreGMIC.Heavy
                         RenderTexture next = NextColorRt(curr);
                         Material.SetTexture("_AuxTex", auxB);
                         Material.SetTexture("_AvgTex", qA);
-                        Graphics.Blit(curr, next, Material, 5); // Pass 5: NormalizeLocalCombine
+                        Graphics.Blit(curr, next, Material, 5);
                         curr = next;
                     }
 
                     RenderTexture rgbOut = NextColorRt(curr);
-                    Graphics.Blit(curr, rgbOut, Material, 6); // Pass 6: YCbCrToRgb
+                    Graphics.Blit(curr, rgbOut, Material, 6);
                     curr = rgbOut;
                 }
 
@@ -250,51 +226,30 @@ namespace CoreGMIC.Heavy
                     Material.SetFloat("_Anisotropy", 0.2f);
                     Material.SetFloat("_Dl", 2f * _detailsScale);
 
-                    Graphics.Blit(curr, auxA, Material, 7); // Pass 7: StructureTensor
-                    Graphics.Blit(auxA, auxB, Material, 8); // Pass 8: BlurTensorH
-                    Graphics.Blit(auxB, auxA, Material, 9); // Pass 9: BlurTensorV
+                    Graphics.Blit(curr, auxA, Material, 7);
+                    Graphics.Blit(auxA, auxB, Material, 8);
+                    Graphics.Blit(auxB, auxA, Material, 9);
 
                     RenderTexture next = NextColorRt(curr);
                     Material.SetTexture("_TensorTex", auxA);
-                    Graphics.Blit(curr, next, Material, 10); // Pass 10: AnisotropicLIC
+                    Graphics.Blit(curr, next, Material, 10);
                     curr = next;
                 }
 
-                // 3. fx_mix_lab (scale a,b by _Color and blur chroma by 0.5%)
+                // 3. fx_mix_lab
                 Material.SetFloat("_ColorMul", _color);
-                Graphics.Blit(curr, auxA, Material, 11); // Pass 11: RgbToLab01
-                Graphics.Blit(auxA, auxB, Material, 12); // Pass 12: ScaleAndBlurLabChromaH
-                Graphics.Blit(auxB, auxA, Material, 13); // Pass 13: BlurLabChromaV
+                Graphics.Blit(curr, auxA, Material, 11);
+                Graphics.Blit(auxA, auxB, Material, 12);
+                Graphics.Blit(auxB, auxA, Material, 13);
                 RenderTexture labOut = NextColorRt(curr);
-                Graphics.Blit(auxA, labOut, Material, 14); // Pass 14: Lab01ToRgb
+                Graphics.Blit(auxA, labOut, Material, 14);
                 curr = labOut;
 
-                // 4. fx_segment_watershed (GPU JFA approximation)
+                // 4. Shared GPU watershed segmentation
                 if (_sharpenShades)
                 {
-                    jfaA = GpuUtils.GetTempRt(w, h, floatFormat, FilterMode.Point);
-                    jfaB = GpuUtils.GetTempRt(w, h, floatFormat, FilterMode.Point);
-
-                    Graphics.Blit(curr, auxA, Material, 15); // Pass 15: BlurColor1H
-                    Graphics.Blit(auxA, auxB, Material, 16); // Pass 16: BlurColor1V (blurred image)
-                    Graphics.Blit(auxB, extraA, Material, 17); // Pass 17: GradientNorm
-
-                    Graphics.Blit(extraA, jfaA, Material, 18); // Pass 18: WatershedSeedInit
-                    RenderTexture jfaSrc = jfaA;
-                    RenderTexture jfaDst = jfaB;
-
-                    Material.SetTexture("_GradTex", extraA);
-                    for (int s = 0; s < JfaSteps.Length; s++)
-                    {
-                        Material.SetFloat("_JfaStep", JfaSteps[s]);
-                        Graphics.Blit(jfaSrc, jfaDst, Material, 19); // Pass 19: WatershedJfaStep
-                        jfaSrc = jfaDst;
-                        jfaDst = (jfaSrc == jfaA) ? jfaB : jfaA;
-                    }
-
                     RenderTexture next = NextColorRt(curr);
-                    Material.SetTexture("_JfaTex", jfaSrc);
-                    Graphics.Blit(auxB, next, Material, 20); // Pass 20: WatershedResolve
+                    _watershed.Apply(curr, next, edgeThreshold: 10f, smoothness: 1.2f);
                     curr = next;
                 }
 
@@ -316,10 +271,9 @@ namespace CoreGMIC.Heavy
                     curr = next;
                 }
 
-                // 6. ancien_gimp_morpho
-                Graphics.Blit(curr, extraA); // Preserve pre-morpho sRGB
-                Material.SetInt("_ChannelMode", _channelMorpho);
-                Graphics.Blit(extraA, auxA, Material, 21); // Pass 21: EncodeChannelSpace -> auxA = encodedOrig
+                // 6. ancien_gimp_morpho via shared GpuChannelOps
+                Graphics.Blit(curr, extraA);
+                GpuChannelOps.Encode(extraA, auxA, _channelMorpho);
 
                 RenderTexture morphoResult;
                 bool needsSecondStage = (_action == 2 || _action == 3 || _action == 6 || _action == 7);
@@ -329,8 +283,7 @@ namespace CoreGMIC.Heavy
                 {
                     RenderTexture stage1 = RunMorpho(auxA, rtA, rtB, auxB, firstIsDilate);
                     RenderTexture freeA = (stage1 == rtA) ? rtB : rtA;
-                    RenderTexture freeB = auxB;
-                    morphoResult = RunMorpho(stage1, freeA, (freeA == rtA) ? rtB : rtA, freeB, !firstIsDilate);
+                    morphoResult = RunMorpho(stage1, freeA, (freeA == rtA) ? rtB : rtA, auxB, !firstIsDilate);
                 }
                 else
                 {
@@ -341,28 +294,23 @@ namespace CoreGMIC.Heavy
                 Material.SetTexture("_BaseTex", auxA);
                 Material.SetInt("_MorphoAction", _action);
                 Material.SetFloat("_InvertColors", _invertColors ? 1f : 0f);
-                Graphics.Blit(morphoResult, combineOut, Material, 25); // Pass 25: MorphoCombineAndInvert
+                Graphics.Blit(morphoResult, combineOut, Material, 18);
 
                 RenderTexture mergedMorpho = (combineOut == rtA) ? rtB : rtA;
-                Material.SetTexture("_BaseTex", extraA);
-                Material.SetInt("_ChannelMode", _channelMorpho);
-                Graphics.Blit(combineOut, mergedMorpho, Material, 26); // Pass 26: DecodeAndMergeChannel
+                GpuChannelOps.DecodeAndMerge(extraA, combineOut, mergedMorpho, _channelMorpho);
                 curr = mergedMorpho;
 
-                // 7. fx_spread
+                // 7. fx_spread via shared GpuChannelOps
                 if (Mathf.Abs(_xVariations) > 0.001f || Mathf.Abs(_yVariations) > 0.001f)
                 {
                     Graphics.Blit(curr, extraA);
-                    Material.SetInt("_ChannelMode", _channelSpread);
-                    Graphics.Blit(extraA, auxA, Material, 21); // Pass 21: EncodeChannelSpace
+                    GpuChannelOps.Encode(extraA, auxA, _channelSpread);
 
                     Material.SetFloat("_SpreadX", _xVariations);
                     Material.SetFloat("_SpreadY", _yVariations);
-                    Graphics.Blit(auxA, auxB, Material, 27); // Pass 27: SpreadPass
+                    Graphics.Blit(auxA, auxB, Material, 19);
 
-                    Material.SetTexture("_BaseTex", extraA);
-                    Material.SetInt("_ChannelMode", _channelSpread);
-                    Graphics.Blit(auxB, destination, Material, 26); // Pass 26: DecodeAndMergeChannel
+                    GpuChannelOps.DecodeAndMerge(extraA, auxB, destination, _channelSpread);
                 }
                 else
                 {
@@ -378,9 +326,14 @@ namespace CoreGMIC.Heavy
                 GpuUtils.ReleaseTemp(extraA);
                 GpuUtils.ReleaseTemp(qA);
                 GpuUtils.ReleaseTemp(qB);
-                GpuUtils.ReleaseTemp(jfaA);
-                GpuUtils.ReleaseTemp(jfaB);
             }
+        }
+
+        public override void Dispose()
+        {
+            _watershed?.Dispose();
+            _watershed = null;
+            base.Dispose();
         }
 
         private RenderTexture RunMorpho(
@@ -401,12 +354,11 @@ namespace CoreGMIC.Heavy
             if (!_octagonalShape)
             {
                 Material.SetInt("_MorphoSize", _size);
-                Graphics.Blit(input, scratch, Material, 22); // Pass 22: MorphoSquareH
-                Graphics.Blit(scratch, pingA, Material, 23); // Pass 23: MorphoSquareV
+                Graphics.Blit(input, scratch, Material, 15);
+                Graphics.Blit(scratch, pingA, Material, 16);
                 return pingA;
             }
 
-            // G'MIC erode_oct / dilate_oct decomposition into r diamond + q square steps.
             int ss = _size + 1 - (_size & 1);
             float sqrt2 = 1.41421356f;
             int r = Mathf.RoundToInt((ss - 1) * sqrt2 / (1f + sqrt2) * 0.5f);
@@ -417,7 +369,7 @@ namespace CoreGMIC.Heavy
 
             for (int step = 0; step < r; step++)
             {
-                Graphics.Blit(cur, next, Material, 24); // Pass 24: MorphoDiamond3x3
+                Graphics.Blit(cur, next, Material, 17);
                 cur = next;
                 next = (cur == pingA) ? pingB : pingA;
             }
@@ -425,8 +377,8 @@ namespace CoreGMIC.Heavy
             if (q > 0)
             {
                 Material.SetInt("_MorphoSize", 2 * q + 1);
-                Graphics.Blit(cur, scratch, Material, 22);
-                Graphics.Blit(scratch, next, Material, 23);
+                Graphics.Blit(cur, scratch, Material, 15);
+                Graphics.Blit(scratch, next, Material, 16);
                 cur = next;
             }
             else if (cur == input)

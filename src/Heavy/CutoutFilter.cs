@@ -51,7 +51,7 @@ namespace CoreGMIC.Heavy
         public override string Description => "Reduces colors into clean paper-cutout shapes with small-island removal.";
         public override FilterCategory Category => FilterCategory.Standard;
         public override bool IsAvailable =>
-            base.IsAvailable && GpuJfa.IsAvailable && _compute != null && SystemInfo.supportsComputeShaders && _stats != null && _stats.IsAvailable;
+            base.IsAvailable && GpuJfa.IsAvailable && GpuNormalize.IsAvailable && _compute != null && SystemInfo.supportsComputeShaders && _stats != null && _stats.IsAvailable;
 
         public CutoutFilter()
         {
@@ -253,12 +253,15 @@ namespace CoreGMIC.Heavy
                 // 4. Optional Normalize [0, 255] with temporal EMA smoothing
                 if (_normalize)
                 {
-                    _stats.ComputeMinMax(cutoutOut, rgbMode: true, temporalAlpha: TemporalAlpha, resetHistory: !_hasMinMaxHistory);
+                    GpuNormalize.Normalize(
+                        cutoutOut,
+                        destination,
+                        preserveAlphaFrom: source,
+                        rgbMode: true,
+                        stats: _stats,
+                        temporalAlpha: TemporalAlpha,
+                        resetHistory: !_hasMinMaxHistory);
                     _hasMinMaxHistory = true;
-
-                    Material.SetTexture("_BaseTex", source);
-                    Material.SetBuffer("_StatsBuf", _stats.StatsBuffer);
-                    Graphics.Blit(cutoutOut, destination, Material, 4);
                 }
                 else
                 {

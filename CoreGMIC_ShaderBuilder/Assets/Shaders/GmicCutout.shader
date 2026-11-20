@@ -15,7 +15,6 @@ Shader "CoreGMIC/Cutout"
     sampler2D _JfaTex;
 
     StructuredBuffer<float4> _Centroids;
-    StructuredBuffer<uint> _StatsBuf;
 
     int _MedianSize;
     int _NumLevels;
@@ -182,26 +181,5 @@ Shader "CoreGMIC/Cutout"
             ENDCG
         }
 
-        // Pass 5: Normalize [0, 1] using Min/Max from _StatsBuf
-        Pass
-        {
-            CGPROGRAM
-            #pragma target 4.5
-            #pragma vertex vert
-            #pragma fragment fragNormalize
-
-            float4 fragNormalize(v2f i) : SV_Target
-            {
-                float3 rgb = tex2Dlod(_MainTex, float4(i.uv, 0.0, 0.0)).rgb;
-                float minV = asfloat(_StatsBuf[0]);
-                float maxV = asfloat(_StatsBuf[1]);
-                float range = maxV - minV;
-
-                float3 outRgb = (range > 1e-5) ? saturate((rgb - minV) / range) : rgb;
-                float alpha = tex2Dlod(_BaseTex, float4(i.uv, 0.0, 0.0)).a;
-                return float4(outRgb, alpha);
-            }
-            ENDCG
-        }
     }
 }
