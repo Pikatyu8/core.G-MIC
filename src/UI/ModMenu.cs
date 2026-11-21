@@ -722,6 +722,28 @@ namespace CoreGMIC.UI
             sliderEnabledElem.isVisible = animOn && initialTarget != null;
             elements.Add(sliderEnabledElem);
 
+            Element modeElem = new HorizontalOption(
+                "Loop Mode",
+                "Oscillate back and forth, or wrap seamlessly between Min and Max.",
+                new[] { "Oscillate", "Infinite Loop", "Reverse Loop" },
+                index =>
+                {
+                    FilterParameter target = FilterAnimationManager.GetSelectedTargetParam(filter);
+                    if (target != null)
+                    {
+                        FilterAnimationManager.SetParamMode(fId, target, (ParameterAnimationMode)Mathf.Clamp(index, 0, 2));
+                    }
+                },
+                () =>
+                {
+                    FilterParameter target = FilterAnimationManager.GetSelectedTargetParam(filter);
+                    return (int)FilterAnimationManager.GetParamMode(fId, target);
+                },
+                Id: GetAnimElementId(fId, "mode")
+            );
+            modeElem.isVisible = initialTargetEnabled;
+            elements.Add(modeElem);
+
             Element freqElem = new DynamicRangeFilterSlider(
                 "Frequency (Hz)",
                 val =>
@@ -887,6 +909,12 @@ namespace CoreGMIC.UI
             if (sliderEnabledElem != null)
             {
                 sliderEnabledElem.isVisible = animOn && targetParam != null;
+            }
+
+            Element modeElem = _menuRef.Find(GetAnimElementId(fId, "mode"));
+            if (modeElem != null)
+            {
+                modeElem.isVisible = targetAnimOn;
             }
 
             Element freqElem = _menuRef.Find(GetAnimElementId(fId, "freq"));

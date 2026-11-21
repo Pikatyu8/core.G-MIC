@@ -17,10 +17,18 @@ namespace CoreGMIC.Core
         public Dictionary<string, FilterAnimationSettings> FilterAnimations { get; set; } = new Dictionary<string, FilterAnimationSettings>();
     }
 
+    public enum ParameterAnimationMode
+    {
+        Oscillate = 0,
+        Loop = 1,
+        ReverseLoop = 2
+    }
+
     [Serializable]
     public class ParameterAnimationSettings
     {
         public bool Enabled { get; set; } = false;
+        public ParameterAnimationMode Mode { get; set; } = ParameterAnimationMode.Oscillate;
         public float Frequency { get; set; } = 0.5f;
         public float MinValue { get; set; } = 0f;
         public float MaxValue { get; set; } = 1f;

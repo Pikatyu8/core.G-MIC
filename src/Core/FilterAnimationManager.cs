@@ -285,6 +285,7 @@ namespace CoreGMIC.Core
                 pAnim = new ParameterAnimationSettings
                 {
                     Enabled = false,
+                    Mode = ParameterAnimationMode.Oscillate,
                     Frequency = ClampFrequency(param, DefaultFrequency),
                     MinValue = param.MinValue,
                     MaxValue = param.MaxValue
@@ -337,6 +338,33 @@ namespace CoreGMIC.Core
             else if (!enabled)
             {
                 param.RestoreBaseValue();
+            }
+        }
+
+        public static ParameterAnimationMode GetParamMode(string filterId, FilterParameter param)
+        {
+            if (string.IsNullOrEmpty(filterId) || param == null)
+            {
+                return ParameterAnimationMode.Oscillate;
+            }
+
+            FilterAnimationSettings filterAnim = GetFilterSettings(filterId, createIfMissing: false);
+            if (filterAnim?.Parameters != null &&
+                filterAnim.Parameters.TryGetValue(param.Key, out ParameterAnimationSettings pAnim) &&
+                pAnim != null)
+            {
+                return pAnim.Mode;
+            }
+
+            return ParameterAnimationMode.Oscillate;
+        }
+
+        public static void SetParamMode(string filterId, FilterParameter param, ParameterAnimationMode mode)
+        {
+            ParameterAnimationSettings pAnim = GetOrCreateParamSettings(filterId, param);
+            if (pAnim != null)
+            {
+                pAnim.Mode = mode;
             }
         }
 
@@ -445,7 +473,20 @@ namespace CoreGMIC.Core
                 }
 
                 float freq = ClampFrequency(param, syncedFreq ?? pAnim.Frequency);
-                float t = 0.5f - 0.5f * Mathf.Cos(elapsed * freq * Mathf.PI * 2f);
+                float t;
+                switch (pAnim.Mode)
+                {
+                    case ParameterAnimationMode.Loop:
+                        t = Mathf.Repeat(elapsed * freq, 1f);
+                        break;
+                    case ParameterAnimationMode.ReverseLoop:
+                        t = 1f - Mathf.Repeat(elapsed * freq, 1f);
+                        break;
+                    default:
+                        t = 0.5f - 0.5f * Mathf.Cos(elapsed * freq * Mathf.PI * 2f);
+                        break;
+                }
+
                 float animValue = Mathf.Lerp(pAnim.MinValue, pAnim.MaxValue, t);
                 param.ApplyAnimatedValue(animValue);
             }
