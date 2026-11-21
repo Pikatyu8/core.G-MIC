@@ -722,7 +722,7 @@ namespace CoreGMIC.UI
             sliderEnabledElem.isVisible = animOn && initialTarget != null;
             elements.Add(sliderEnabledElem);
 
-            Element freqElem = new FilterSlider(
+            Element freqElem = new DynamicRangeFilterSlider(
                 "Frequency (Hz)",
                 val =>
                 {
@@ -735,12 +735,15 @@ namespace CoreGMIC.UI
                 () =>
                 {
                     FilterParameter target = FilterAnimationManager.GetSelectedTargetParam(filter);
-                    return FilterAnimationManager.GetOrCreateParamSettings(fId, target)?.Frequency ?? FilterAnimationManager.DefaultFrequency;
+                    return FilterAnimationManager.GetOrCreateParamSettings(fId, target)?.Frequency ??
+                           FilterAnimationManager.ClampFrequency(target, FilterAnimationManager.DefaultFrequency);
                 },
-                FilterAnimationManager.MinFrequency,
-                FilterAnimationManager.MaxFrequency,
-                wholeNumbers: false,
-                step: 0.05f,
+                () =>
+                {
+                    FilterParameter target = FilterAnimationManager.GetSelectedTargetParam(filter);
+                    FilterAnimationManager.GetFrequencySpec(target, out float minFreq, out float maxFreq, out float step);
+                    return (minFreq, maxFreq, false, step);
+                },
                 id: GetAnimElementId(fId, "freq")
             );
             freqElem.isVisible = initialTargetEnabled;
@@ -761,7 +764,13 @@ namespace CoreGMIC.UI
                     FilterParameter target = FilterAnimationManager.GetSelectedTargetParam(filter);
                     return FilterAnimationManager.GetOrCreateParamSettings(fId, target)?.MinValue ?? 0f;
                 },
-                () => FilterAnimationManager.GetSelectedTargetParam(filter),
+                () =>
+                {
+                    FilterParameter target = FilterAnimationManager.GetSelectedTargetParam(filter);
+                    return target != null
+                        ? (target.MinValue, target.MaxValue, target.Kind == FilterParamKind.Int, target.Step)
+                        : (0f, 1f, false, 0f);
+                },
                 id: GetAnimElementId(fId, "min")
             );
             minElem.isVisible = initialTargetEnabled;
@@ -782,7 +791,13 @@ namespace CoreGMIC.UI
                     FilterParameter target = FilterAnimationManager.GetSelectedTargetParam(filter);
                     return FilterAnimationManager.GetOrCreateParamSettings(fId, target)?.MaxValue ?? 1f;
                 },
-                () => FilterAnimationManager.GetSelectedTargetParam(filter),
+                () =>
+                {
+                    FilterParameter target = FilterAnimationManager.GetSelectedTargetParam(filter);
+                    return target != null
+                        ? (target.MinValue, target.MaxValue, target.Kind == FilterParamKind.Int, target.Step)
+                        : (0f, 1f, false, 0f);
+                },
                 id: GetAnimElementId(fId, "max")
             );
             maxElem.isVisible = initialTargetEnabled;
@@ -1113,17 +1128,17 @@ namespace CoreGMIC.UI
 
         private sealed class DynamicRangeFilterSlider : FilterSlider
         {
-            private readonly Func<FilterParameter> _getTarget;
+            private readonly Func<(float min, float max, bool wholeNumbers, float step)> _getRange;
 
             public DynamicRangeFilterSlider(
                 string name,
                 Action<float> storeValue,
                 Func<float> loadValue,
-                Func<FilterParameter> getTarget,
+                Func<(float min, float max, bool wholeNumbers, float step)> getRange,
                 string id = "__UseName")
                 : base(name, storeValue, loadValue, 0f, 1f, wholeNumbers: false, step: 0f, id: id)
             {
-                _getTarget = getTarget;
+                _getRange = getRange;
 
                 Action<float> originalStore = storeValue;
                 StoreValue = val =>
@@ -1140,13 +1155,13 @@ namespace CoreGMIC.UI
                 SuppressStore = true;
                 try
                 {
-                    FilterParameter target = _getTarget?.Invoke();
-                    if (target != null)
+                    if (_getRange != null)
                     {
-                        minValue = target.MinValue;
-                        maxValue = target.MaxValue;
-                        wholeNumbers = target.Kind == FilterParamKind.Int;
-                        StepSize = wholeNumbers ? 0f : target.Step;
+                        (float min, float max, bool isWhole, float step) = _getRange();
+                        minValue = min;
+                        maxValue = max;
+                        wholeNumbers = isWhole;
+                        StepSize = isWhole ? 0f : step;
                     }
 
                     base.Update();

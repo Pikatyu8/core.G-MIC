@@ -76,6 +76,11 @@ namespace CoreGMIC
             FilterManager.Register(new UltraWarp4PlusFilter());
             FilterManager.Register(new PlayerSwirlFilter());
             FilterManager.Register(new FrameCubeFilter());
+            FilterManager.Register(new HalftoneShapesFilter());
+            FilterManager.Register(new StencilFilter());
+            FilterManager.Register(new PackEllipsesFilter());
+            FilterManager.Register(new LavaFilter());
+            FilterManager.Register(new ImageObject3DFilter());
         }
 
         private void OnGameCamerasSceneInit(On.GameCameras.orig_SceneInit orig, GameCameras self)

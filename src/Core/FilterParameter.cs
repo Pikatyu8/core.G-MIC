@@ -24,6 +24,9 @@ namespace CoreGMIC.Core
         public float Step { get; }
         public string[] Choices { get; }
         public Func<bool> IsVisible { get; }
+        public float? AnimMinFrequency { get; private set; }
+        public float? AnimMaxFrequency { get; private set; }
+        public float? AnimFrequencyStep { get; private set; }
 
         private float _value;
         private readonly Action<float> _onChanged;
@@ -98,6 +101,16 @@ namespace CoreGMIC.Core
             {
                 _onChanged?.Invoke(0f);
             }
+        }
+
+        public FilterParameter WithAnimationFrequency(float minFreq, float maxFreq, float step = 0.05f)
+        {
+            float lo = Mathf.Max(0f, Mathf.Min(minFreq, maxFreq));
+            float hi = Mathf.Max(lo, maxFreq);
+            AnimMinFrequency = lo;
+            AnimMaxFrequency = hi;
+            AnimFrequencyStep = Mathf.Max(0f, step);
+            return this;
         }
 
         internal void ApplyAnimatedValue(float raw)

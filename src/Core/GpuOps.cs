@@ -562,4 +562,153 @@ namespace CoreGMIC.Core
             }
         }
     }
+
+    public static class GpuAnisoSmooth
+    {
+        public static bool IsAvailable => GpuOpsResources.IsAvailable && GpuBlur.IsAvailable;
+
+        public static void ComputeStructureTensor(RenderTexture source, RenderTexture destination, float sigmaPx = 0f)
+        {
+            Material mat = GpuOpsResources.OpsMaterial;
+            if (mat == null || source == null || destination == null)
+            {
+                return;
+            }
+
+            if (sigmaPx <= 0.05f)
+            {
+                Graphics.Blit(source, destination, mat, 11);
+                return;
+            }
+
+            RenderTexture tensorB = GpuUtils.GetTempRt(source.width, source.height, GpuUtils.FloatFormat);
+            try
+            {
+                Graphics.Blit(source, destination, mat, 11);
+                mat.SetFloat("_SigmaPx", sigmaPx);
+                Graphics.Blit(destination, tensorB, mat, 12);
+                Graphics.Blit(tensorB, destination, mat, 13);
+            }
+            finally
+            {
+                GpuUtils.ReleaseTemp(tensorB);
+            }
+        }
+
+        public static void Smooth(
+            RenderTexture source,
+            RenderTexture destination,
+            float amplitude,
+            float sharpness = 0f,
+            float anisotropy = 1f,
+            float alpha = 1f,
+            float sigma = 1.1f,
+            float dl = 0.8f)
+        {
+            if (source == null || destination == null)
+            {
+                return;
+            }
+
+            Material mat = GpuOpsResources.OpsMaterial;
+            if (mat == null || amplitude <= 0.01f)
+            {
+                if (source != destination)
+                {
+                    Graphics.Blit(source, destination);
+                }
+                return;
+            }
+
+            int w = source.width;
+            int h = source.height;
+            RenderTextureFormat colorFormat = GpuUtils.ColorFormat;
+            RenderTextureFormat tensorFormat = GpuUtils.FloatFormat;
+
+            int passes = Mathf.Clamp(Mathf.CeilToInt(amplitude / 30f), 1, 6);
+            float stepDl = Mathf.Max(0.25f, dl * Mathf.Sqrt(amplitude / passes));
+
+            RenderTexture pingA = null;
+            RenderTexture pingB = null;
+            RenderTexture preTensorRt = null;
+            RenderTexture tensorA = null;
+            RenderTexture tensorB = null;
+
+            try
+            {
+                pingA = GpuUtils.GetTempRt(w, h, colorFormat);
+                if (passes > 1 || source == destination)
+                {
+                    pingB = GpuUtils.GetTempRt(w, h, colorFormat);
+                }
+
+                if (alpha > 0.05f)
+                {
+                    preTensorRt = GpuUtils.GetTempRt(w, h, colorFormat);
+                }
+
+                tensorA = GpuUtils.GetTempRt(w, h, tensorFormat);
+                if (sigma > 0.05f)
+                {
+                    tensorB = GpuUtils.GetTempRt(w, h, tensorFormat);
+                }
+
+                mat.SetFloat("_AnisoSharpness", sharpness);
+                mat.SetFloat("_AnisoAnisotropy", anisotropy);
+                mat.SetFloat("_AnisoDl", stepDl);
+
+                RenderTexture curr = source;
+                for (int p = 0; p < passes; p++)
+                {
+                    RenderTexture tensorSrc = curr;
+                    if (preTensorRt != null)
+                    {
+                        GpuBlur.Blur(curr, preTensorRt, alpha);
+                        tensorSrc = preTensorRt;
+                    }
+
+                    Graphics.Blit(tensorSrc, tensorA, mat, 11);
+                    if (sigma > 0.05f && tensorB != null)
+                    {
+                        mat.SetFloat("_SigmaPx", sigma);
+                        Graphics.Blit(tensorA, tensorB, mat, 12);
+                        Graphics.Blit(tensorB, tensorA, mat, 13);
+                    }
+
+                    bool isLast = (p == passes - 1);
+                    RenderTexture next = isLast
+                        ? destination
+                        : ((curr == pingA) ? pingB : pingA);
+
+                    mat.SetTexture("_TensorTex", tensorA);
+                    Graphics.Blit(curr, next, mat, 14);
+                    curr = next;
+                }
+            }
+            finally
+            {
+                GpuUtils.ReleaseTemp(pingA);
+                GpuUtils.ReleaseTemp(pingB);
+                GpuUtils.ReleaseTemp(preTensorRt);
+                GpuUtils.ReleaseTemp(tensorA);
+                GpuUtils.ReleaseTemp(tensorB);
+            }
+        }
+    }
+
+    public static class GpuNorm
+    {
+        public static bool IsAvailable => GpuOpsResources.IsAvailable;
+
+        public static void ComputeNorm(RenderTexture source, RenderTexture destination)
+        {
+            Material mat = GpuOpsResources.OpsMaterial;
+            if (mat == null || source == null || destination == null)
+            {
+                return;
+            }
+
+            Graphics.Blit(source, destination, mat, 15);
+        }
+    }
 }

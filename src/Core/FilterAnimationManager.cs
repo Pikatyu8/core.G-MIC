@@ -1,3 +1,4 @@
+using System;
 using System.Collections.Generic;
 using UnityEngine;
 
@@ -8,6 +9,7 @@ namespace CoreGMIC.Core
         public const float MinFrequency = 0.05f;
         public const float MaxFrequency = 10.0f;
         public const float DefaultFrequency = 0.5f;
+        public const float DefaultFrequencyStep = 0.05f;
 
         private static readonly Dictionary<string, string> _selectedParamKeys = new Dictionary<string, string>();
         private static IFilter _lastAnimatedFilter;
@@ -35,12 +37,41 @@ namespace CoreGMIC.Core
                 {
                     if (filterAnim.Parameters.TryGetValue(param.Key, out ParameterAnimationSettings pAnim) && pAnim != null)
                     {
-                        pAnim.Frequency = Mathf.Clamp(pAnim.Frequency, MinFrequency, MaxFrequency);
+                        pAnim.Frequency = ClampFrequency(param, pAnim.Frequency);
                         pAnim.MinValue = Mathf.Clamp(pAnim.MinValue, param.MinValue, param.MaxValue);
                         pAnim.MaxValue = Mathf.Clamp(pAnim.MaxValue, param.MinValue, param.MaxValue);
                     }
                 }
             }
+        }
+
+        public static void GetFrequencySpec(
+            FilterParameter param,
+            out float minFreq,
+            out float maxFreq,
+            out float step)
+        {
+            minFreq = param?.AnimMinFrequency ?? MinFrequency;
+            maxFreq = param?.AnimMaxFrequency ?? MaxFrequency;
+            if (maxFreq < minFreq)
+            {
+                maxFreq = minFreq;
+            }
+
+            step = param?.AnimFrequencyStep ?? DefaultFrequencyStep;
+        }
+
+        public static float ClampFrequency(FilterParameter param, float frequency)
+        {
+            GetFrequencySpec(param, out float minFreq, out float maxFreq, out float step);
+            float clamped = Mathf.Clamp(frequency, minFreq, maxFreq);
+            if (step > 0f)
+            {
+                float stepped = minFreq + Mathf.Round((clamped - minFreq) / step) * step;
+                clamped = Mathf.Clamp((float)Math.Round(stepped, 4), minFreq, maxFreq);
+            }
+
+            return clamped;
         }
 
         public static bool HasNumericParameters(IFilter filter)
@@ -254,11 +285,15 @@ namespace CoreGMIC.Core
                 pAnim = new ParameterAnimationSettings
                 {
                     Enabled = false,
-                    Frequency = DefaultFrequency,
+                    Frequency = ClampFrequency(param, DefaultFrequency),
                     MinValue = param.MinValue,
                     MaxValue = param.MaxValue
                 };
                 filterAnim.Parameters[param.Key] = pAnim;
+            }
+            else
+            {
+                pAnim.Frequency = ClampFrequency(param, pAnim.Frequency);
             }
 
             return pAnim;
@@ -312,7 +347,7 @@ namespace CoreGMIC.Core
                 return;
             }
 
-            float clamped = Mathf.Clamp(frequency, MinFrequency, MaxFrequency);
+            float clamped = ClampFrequency(param, frequency);
             ParameterAnimationSettings pAnim = GetOrCreateParamSettings(filter.Id, param);
             if (pAnim != null)
             {
@@ -409,7 +444,7 @@ namespace CoreGMIC.Core
                     continue;
                 }
 
-                float freq = Mathf.Clamp(syncedFreq ?? pAnim.Frequency, MinFrequency, MaxFrequency);
+                float freq = ClampFrequency(param, syncedFreq ?? pAnim.Frequency);
                 float t = 0.5f - 0.5f * Mathf.Cos(elapsed * freq * Mathf.PI * 2f);
                 float animValue = Mathf.Lerp(pAnim.MinValue, pAnim.MaxValue, t);
                 param.ApplyAnimatedValue(animValue);
@@ -439,15 +474,15 @@ namespace CoreGMIC.Core
                 return;
             }
 
-            float freq = Mathf.Clamp(targetFreq.Value, MinFrequency, MaxFrequency);
             List<FilterParameter> visible = GetVisibleNumericParameters(filter);
             for (int i = 0; i < visible.Count; i++)
             {
-                if (filterAnim.Parameters.TryGetValue(visible[i].Key, out ParameterAnimationSettings pAnim) &&
+                FilterParameter param = visible[i];
+                if (filterAnim.Parameters.TryGetValue(param.Key, out ParameterAnimationSettings pAnim) &&
                     pAnim != null &&
                     pAnim.Enabled)
                 {
-                    pAnim.Frequency = freq;
+                    pAnim.Frequency = ClampFrequency(param, targetFreq.Value);
                 }
             }
         }
@@ -476,7 +511,7 @@ namespace CoreGMIC.Core
                     pAnim != null &&
                     pAnim.Enabled)
                 {
-                    return Mathf.Clamp(pAnim.Frequency, MinFrequency, MaxFrequency);
+                    return ClampFrequency(p, pAnim.Frequency);
                 }
             }
 

@@ -1,0 +1,332 @@
+#pragma kernel CSClearSlicAccum
+#pragma kernel CSInitSlic
+#pragma kernel CSAssignSlic
+#pragma kernel CSUpdateSlic
+#pragma kernel CSInitOccupancy
+#pragma kernel CSPackRound
+#pragma kernel CSBuildIndirectArgs
+
+Texture2D<float4> _SourceTex;
+Texture2D<float4> _BlurNormTex;
+Texture2D<float4> _FieldTex;
+
+RWTexture2D<uint> _SlicLabelTex;
+RWTexture2D<float> _OccTex;
+
+RWStructuredBuffer<float4> _SlicSeeds;    // xy = posPx, zw = r, g
+RWStructuredBuffer<float4> _SlicSeedsB;   // x = b
+RWStructuredBuffer<uint> _SlicAccum;      // 6 uints per seed: sumX, sumY, sumR, sumG, sumB, count
+
+RWStructuredBuffer<float4> _EllipseGeom;  // cx, cy, r1, r2
+RWStructuredBuffer<float4> _EllipseData;  // angle, avgR, avgG, avgB
+RWStructuredBuffer<uint> _CountBuf;
+RWStructuredBuffer<uint> _ArgsBuf;
+
+int _Width;
+int _Height;
+int _SlicSize;
+int _SlicW;
+int _SlicH;
+int _UseRegionAnalysis;
+int _PhaseX;
+int _PhaseY;
+int _CellSize;
+int _RoundSeed;
+int _MaxEllipses;
+float _RoundRadius;
+float _MinRadius;
+float _RadiusDilation;
+
+#define GMIC_COMPUTE 1
+#define GMIC_USE_HASH 1
+#include "GmicCommon.cginc"
+
+[numthreads(64, 1, 1)]
+void CSClearSlicAccum(uint3 dtid : SV_DispatchThreadID)
+{
+    uint idx = dtid.x;
+    uint total = (uint)(_SlicW * _SlicH);
+    if (idx >= total)
+        return;
+
+    uint baseOff = idx * 6u;
+    _SlicAccum[baseOff + 0u] = 0u;
+    _SlicAccum[baseOff + 1u] = 0u;
+    _SlicAccum[baseOff + 2u] = 0u;
+    _SlicAccum[baseOff + 3u] = 0u;
+    _SlicAccum[baseOff + 4u] = 0u;
+    _SlicAccum[baseOff + 5u] = 0u;
+}
+
+[numthreads(8, 8, 1)]
+void CSInitSlic(uint3 dtid : SV_DispatchThreadID)
+{
+    if (dtid.x >= (uint)_SlicW || dtid.y >= (uint)_SlicH)
+        return;
+
+    int cx = clamp((int)((dtid.x + 0.5) * (float)_SlicSize), 0, max(0, _Width - 1));
+    int cy = clamp((int)((dtid.y + 0.5) * (float)_SlicSize), 0, max(0, _Height - 1));
+
+    int bestX = cx;
+    int bestY = cy;
+    float bestGrad = 1e20;
+    for (int dy = -1; dy <= 1; dy++)
+    {
+        for (int dx = -1; dx <= 1; dx++)
+        {
+            int px = clamp(cx + dx, 1, max(1, _Width - 2));
+            int py = clamp(cy + dy, 1, max(1, _Height - 2));
+            float3 gX = _BlurNormTex[int2(px + 1, py)].rgb - _BlurNormTex[int2(px - 1, py)].rgb;
+            float3 gY = _BlurNormTex[int2(px, py + 1)].rgb - _BlurNormTex[int2(px, py - 1)].rgb;
+            float g2 = dot(gX, gX) + dot(gY, gY);
+            if (g2 < bestGrad)
+            {
+                bestGrad = g2;
+                bestX = px;
+                bestY = py;
+            }
+        }
+    }
+
+    float3 rgb = saturate(_BlurNormTex[int2(bestX, bestY)].rgb);
+    uint idx = dtid.y * (uint)_SlicW + dtid.x;
+    _SlicSeeds[idx] = float4((float)bestX, (float)bestY, rgb.r, rgb.g);
+    _SlicSeedsB[idx] = float4(rgb.b, 0.0, 0.0, 0.0);
+}
+
+[numthreads(16, 16, 1)]
+void CSAssignSlic(uint3 dtid : SV_DispatchThreadID)
+{
+    if (dtid.x >= (uint)_Width || dtid.y >= (uint)_Height)
+        return;
+
+    float3 rgb = saturate(_BlurNormTex[dtid.xy].rgb);
+    int gx = clamp((int)dtid.x / max(1, _SlicSize), 0, max(0, _SlicW - 1));
+    int gy = clamp((int)dtid.y / max(1, _SlicSize), 0, max(0, _SlicH - 1));
+
+    uint bestIdx = (uint)(gy * _SlicW + gx);
+    float bestDist = 1e20;
+
+    for (int dy = -1; dy <= 1; dy++)
+    {
+        int ny = gy + dy;
+        if (ny < 0 || ny >= _SlicH)
+            continue;
+
+        for (int dx = -1; dx <= 1; dx++)
+        {
+            int nx = gx + dx;
+            if (nx < 0 || nx >= _SlicW)
+                continue;
+
+            uint sIdx = (uint)(ny * _SlicW + nx);
+            float4 sA = _SlicSeeds[sIdx];
+            float sB = _SlicSeedsB[sIdx].x;
+            float3 sRgb = float3(sA.z, sA.w, sB);
+
+            float3 dc = rgb - sRgb;
+            float2 ds = float2((float)dtid.x - sA.x, (float)dtid.y - sA.y);
+            float dist = dot(dc, dc) + 1e-8 * dot(ds, ds);
+            if (dist < bestDist)
+            {
+                bestDist = dist;
+                bestIdx = sIdx;
+            }
+        }
+    }
+
+    _SlicLabelTex[dtid.xy] = bestIdx;
+
+    uint baseOff = bestIdx * 6u;
+    InterlockedAdd(_SlicAccum[baseOff + 0u], dtid.x);
+    InterlockedAdd(_SlicAccum[baseOff + 1u], dtid.y);
+    InterlockedAdd(_SlicAccum[baseOff + 2u], (uint)(rgb.r * 256.0 + 0.5));
+    InterlockedAdd(_SlicAccum[baseOff + 3u], (uint)(rgb.g * 256.0 + 0.5));
+    InterlockedAdd(_SlicAccum[baseOff + 4u], (uint)(rgb.b * 256.0 + 0.5));
+    InterlockedAdd(_SlicAccum[baseOff + 5u], 1u);
+}
+
+[numthreads(64, 1, 1)]
+void CSUpdateSlic(uint3 dtid : SV_DispatchThreadID)
+{
+    uint idx = dtid.x;
+    uint total = (uint)(_SlicW * _SlicH);
+    if (idx >= total)
+        return;
+
+    uint baseOff = idx * 6u;
+    uint cnt = _SlicAccum[baseOff + 5u];
+    if (cnt == 0u)
+        return;
+
+    float invC = 1.0 / (float)cnt;
+    float invRgb = 1.0 / ((float)cnt * 256.0);
+    float nx = (float)_SlicAccum[baseOff + 0u] * invC;
+    float ny = (float)_SlicAccum[baseOff + 1u] * invC;
+    float nr = (float)_SlicAccum[baseOff + 2u] * invRgb;
+    float ng = (float)_SlicAccum[baseOff + 3u] * invRgb;
+    float nb = (float)_SlicAccum[baseOff + 4u] * invRgb;
+
+    _SlicSeeds[idx] = float4(nx, ny, nr, ng);
+    _SlicSeedsB[idx] = float4(nb, 0.0, 0.0, 0.0);
+}
+
+[numthreads(16, 16, 1)]
+void CSInitOccupancy(uint3 dtid : SV_DispatchThreadID)
+{
+    if (dtid.x == 0u && dtid.y == 0u)
+    {
+        _CountBuf[0] = 0u;
+    }
+
+    if (dtid.x >= (uint)_Width || dtid.y >= (uint)_Height)
+        return;
+
+    if (_UseRegionAnalysis == 0)
+    {
+        _OccTex[dtid.xy] = 0.0;
+        return;
+    }
+
+    uint c = _SlicLabelTex[dtid.xy];
+    uint maxX = (uint)max(0, _Width - 1);
+    uint maxY = (uint)max(0, _Height - 1);
+
+    uint l = _SlicLabelTex[uint2(dtid.x > 0u ? dtid.x - 1u : 0u, dtid.y)];
+    uint r = _SlicLabelTex[uint2(min(maxX, dtid.x + 1u), dtid.y)];
+    uint d = _SlicLabelTex[uint2(dtid.x, dtid.y > 0u ? dtid.y - 1u : 0u)];
+    uint u = _SlicLabelTex[uint2(dtid.x, min(maxY, dtid.y + 1u))];
+
+    float3 gx = _BlurNormTex[uint2(min(maxX, dtid.x + 1u), dtid.y)].rgb - _BlurNormTex[uint2(dtid.x > 0u ? dtid.x - 1u : 0u, dtid.y)].rgb;
+    float3 gy = _BlurNormTex[uint2(dtid.x, min(maxY, dtid.y + 1u))].rgb - _BlurNormTex[uint2(dtid.x, dtid.y > 0u ? dtid.y - 1u : 0u)].rgb;
+    float gMag = sqrt(dot(gx, gx) + dot(gy, gy)) * 0.5;
+
+    bool isContour = (c != l) || (c != r) || (c != d) || (c != u) || (gMag >= 0.05);
+    _OccTex[dtid.xy] = isContour ? 1.0 : 0.0;
+}
+
+[numthreads(8, 8, 1)]
+void CSPackRound(uint3 dtid : SV_DispatchThreadID)
+{
+    uint cellX = dtid.x * 3u + (uint)_PhaseX;
+    uint cellY = dtid.y * 3u + (uint)_PhaseY;
+
+    int originX = (int)cellX * _CellSize;
+    int originY = (int)cellY * _CellSize;
+    if (originX >= _Width || originY >= _Height)
+        return;
+
+    int stepPx = max(1, (int)ceil(_RoundRadius / 6.0));
+    int probeR = (int)ceil(_RoundRadius);
+    float stepMargin = (stepPx > 1) ? (0.71 * (float)stepPx) : 0.0;
+
+    bool placed = false;
+    for (int attempt = 0; attempt < 4; attempt++)
+    {
+        if (placed)
+            break;
+
+        uint h1 = HashU32(cellX * 73856093u ^ cellY * 19349663u ^ ((uint)_RoundSeed * 2654435761u) ^ ((uint)attempt * 83492791u));
+        uint h2 = HashU32(h1 ^ 0x9E3779B9u);
+
+        int cx = originX + (int)(h1 % (uint)_CellSize);
+        int cy = originY + (int)(h2 % (uint)_CellSize);
+        if (cx >= _Width || cy >= _Height)
+            continue;
+
+        if (_OccTex[uint2((uint)cx, (uint)cy)] > 0.5)
+            continue;
+
+        float minBlockedDistSq = (_RoundRadius + 3.0) * (_RoundRadius + 3.0);
+        for (int dy = -probeR; dy <= probeR; dy += stepPx)
+        {
+            int sy = cy + dy;
+            if (sy < 0 || sy >= _Height)
+            {
+                float d2 = (float)(dy * dy);
+                if (d2 < minBlockedDistSq) minBlockedDistSq = d2;
+                continue;
+            }
+
+            for (int dx = -probeR; dx <= probeR; dx += stepPx)
+            {
+                int sx = cx + dx;
+                float d2 = (float)(dx * dx + dy * dy);
+                if (d2 >= minBlockedDistSq)
+                    continue;
+
+                if (sx < 0 || sx >= _Width || _OccTex[uint2((uint)sx, (uint)sy)] > 0.5)
+                {
+                    minBlockedDistSq = d2;
+                }
+            }
+        }
+
+        float fitR = min(_RoundRadius, sqrt(minBlockedDistSq) - 1.25 - stepMargin);
+        if (fitR <= _MinRadius)
+            continue;
+
+        float4 field = _FieldTex[uint2((uint)cx, (uint)cy)];
+        float iso = clamp(field.x, 0.05, 1.0);
+        float angle = field.y;
+
+        float r1 = fitR;
+        float r2 = max(1.0, fitR * iso);
+
+        float sA, cA;
+        sincos(-angle, sA, cA);
+
+        int stampR = (int)ceil(r1);
+        int minPx = max(0, cx - stampR);
+        int maxPx = min(_Width - 1, cx + stampR);
+        int minPy = max(0, cy - stampR);
+        int maxPy = min(_Height - 1, cy + stampR);
+
+        float3 sumRgb = float3(0.0, 0.0, 0.0);
+        float cnt = 0.0;
+        float invR1Sq = 1.0 / max(0.25, r1 * r1);
+        float invR2Sq = 1.0 / max(0.25, r2 * r2);
+
+        for (int py = minPy; py <= maxPy; py++)
+        {
+            float ly = (float)(py - cy);
+            for (int px = minPx; px <= maxPx; px++)
+            {
+                float lx = (float)(px - cx);
+                float u = lx * cA - ly * sA;
+                float v = lx * sA + ly * cA;
+                if (u * u * invR1Sq + v * v * invR2Sq <= 1.0)
+                {
+                    _OccTex[uint2((uint)px, (uint)py)] = 1.0;
+                    sumRgb += saturate(_SourceTex[uint2((uint)px, (uint)py)].rgb);
+                    cnt += 1.0;
+                }
+            }
+        }
+
+        float drawR1 = r1 + _RadiusDilation;
+        float drawR2 = max(1.0, drawR1 * iso);
+        if (drawR1 > 0.25 && cnt > 0.5)
+        {
+            float3 avgRgb = sumRgb / cnt;
+            uint outIdx;
+            InterlockedAdd(_CountBuf[0], 1u, outIdx);
+            if (outIdx < (uint)_MaxEllipses)
+            {
+                _EllipseGeom[outIdx] = float4((float)cx + 0.5, (float)cy + 0.5, drawR1, drawR2);
+                _EllipseData[outIdx] = float4(angle, avgRgb.r, avgRgb.g, avgRgb.b);
+            }
+        }
+
+        placed = true;
+    }
+}
+
+[numthreads(1, 1, 1)]
+void CSBuildIndirectArgs()
+{
+    _ArgsBuf[0] = 6u;
+    _ArgsBuf[1] = min(_CountBuf[0], (uint)_MaxEllipses);
+    _ArgsBuf[2] = 0u;
+    _ArgsBuf[3] = 0u;
+}
