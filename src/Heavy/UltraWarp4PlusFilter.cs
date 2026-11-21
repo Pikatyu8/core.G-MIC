@@ -112,8 +112,8 @@ namespace CoreGMIC.Heavy
         private int _boundary = 5;
         private int _warpChannels = 2;
         private int _warpDirectionMode = 0;
-        private float _warpDirX = 0.5f;
-        private float _warpDirY = 0.5f;
+        private float _warpDirX = 0.0025f;
+        private float _warpDirY = 0.0025f;
         private float _warpOffsetBias = 0f;
         private bool _randomNegation = true;
         private int _negationChannels = 2;
@@ -437,19 +437,19 @@ namespace CoreGMIC.Heavy
                 "warp_dir_x",
                 "Warp Dir X",
                 "Manual horizontal warp direction multiplier.",
-                -1f, 1f, 0.5f,
+                -0.05f, 0.05f, 0.05f,
                 v => _warpDirX = v,
                 isVisible: () => _warpIterations > 0 && _warpDirectionMode != 0,
-                step: 0.05f));
+                step: 0.0025f));
 
             AddParameter(FilterParameter.Float(
                 "warp_dir_y",
                 "Warp Dir Y",
                 "Manual vertical warp direction multiplier.",
-                -1f, 1f, 0.5f,
+                -0.05f, 0.05f, 0.05f,
                 v => _warpDirY = v,
                 isVisible: () => _warpIterations > 0 && _warpDirectionMode != 0,
-                step: 0.05f));
+                step: 0.0025f));
 
             AddParameter(FilterParameter.Float(
                 "warp_offset_bias",
