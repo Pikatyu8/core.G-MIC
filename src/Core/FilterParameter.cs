@@ -28,12 +28,15 @@ namespace CoreGMIC.Core
         private float _value;
         private readonly Action<float> _onChanged;
 
+        public float BaseValue { get; private set; }
+
         public float Value
         {
             get => _value;
             set
             {
                 float normalized = Normalize(value);
+                BaseValue = normalized;
                 if (Mathf.Approximately(_value, normalized))
                 {
                     return;
@@ -71,6 +74,7 @@ namespace CoreGMIC.Core
             Choices = choices;
             IsVisible = isVisible;
             _onChanged = onChanged;
+            BaseValue = DefaultValue;
             _value = DefaultValue;
         }
 
@@ -94,6 +98,30 @@ namespace CoreGMIC.Core
             {
                 _onChanged?.Invoke(0f);
             }
+        }
+
+        internal void ApplyAnimatedValue(float raw)
+        {
+            float clamped = Mathf.Clamp(raw, MinValue, MaxValue);
+            float next = (Kind == FilterParamKind.Int) ? Mathf.Round(clamped) : clamped;
+            if (Mathf.Approximately(_value, next))
+            {
+                return;
+            }
+
+            _value = next;
+            _onChanged?.Invoke(_value);
+        }
+
+        internal void RestoreBaseValue()
+        {
+            if (Mathf.Approximately(_value, BaseValue))
+            {
+                return;
+            }
+
+            _value = BaseValue;
+            _onChanged?.Invoke(_value);
         }
 
         private float Normalize(float raw)

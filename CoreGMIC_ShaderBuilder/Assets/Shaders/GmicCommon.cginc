@@ -141,4 +141,30 @@ float2 GetTangentAndEdge(float2 uv, out float edgeEnergy)
 }
 #endif
 
+#ifdef GMIC_USE_BOUNDARY
+float4 SampleWithBoundary(sampler2D tex, float2 uv, int boundaryMode)
+{
+    float4 result = float4(0.0, 0.0, 0.0, 0.0);
+    if (boundaryMode == 0)
+    {
+        if (uv.x >= 0.0 && uv.x <= 1.0 && uv.y >= 0.0 && uv.y <= 1.0)
+            result = tex2Dlod(tex, float4(uv, 0.0, 0.0));
+    }
+    else if (boundaryMode == 1)
+    {
+        result = tex2Dlod(tex, float4(saturate(uv), 0.0, 0.0));
+    }
+    else if (boundaryMode == 2)
+    {
+        result = tex2Dlod(tex, float4(frac(uv), 0.0, 0.0));
+    }
+    else
+    {
+        float2 m = 1.0 - abs(frac(uv * 0.5) * 2.0 - 1.0);
+        result = tex2Dlod(tex, float4(m, 0.0, 0.0));
+    }
+    return result;
+}
+#endif
+
 #endif

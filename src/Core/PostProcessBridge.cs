@@ -96,12 +96,14 @@ namespace CoreGMIC.Core
 
             if (ShouldBypassFilters() || !FilterManager.IsEnabled || activeFilter == null || !activeFilter.IsAvailable)
             {
+                FilterAnimationManager.RestoreActiveFilter();
                 Graphics.Blit(source, destination);
                 return;
             }
 
             try
             {
+                FilterAnimationManager.UpdateActiveFilter(activeFilter);
                 activeFilter.Apply(source, destination);
                 _lastFailedFilterId = null;
             }

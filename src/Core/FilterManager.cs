@@ -180,7 +180,7 @@ namespace CoreGMIC.Core
                     continue;
                 }
 
-                dict[param.Key] = param.Value;
+                dict[param.Key] = param.BaseValue;
             }
         }
 
@@ -191,6 +191,7 @@ namespace CoreGMIC.Core
                 return;
             }
 
+            FilterAnimationManager.ResetFilter(filter);
             filter.ResetParameters();
             SaveFilterParameters(filter);
         }

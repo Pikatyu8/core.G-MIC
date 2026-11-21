@@ -125,19 +125,22 @@ namespace CoreGMIC.UI
 
                 foreach (IFilter filter in FilterManager.Filters)
                 {
-                    if (filter.Parameters == null)
+                    if (filter.Parameters != null)
                     {
-                        continue;
+                        foreach (FilterParameter param in filter.Parameters)
+                        {
+                            Element elem = CreateParameterElement(filter.Id, param);
+                            if (elem != null)
+                            {
+                                elem.isVisible = ShouldShowParam(filter, param);
+                                elements.Add(elem);
+                            }
+                        }
                     }
 
-                    foreach (FilterParameter param in filter.Parameters)
+                    if (FilterAnimationManager.HasNumericParameters(filter))
                     {
-                        Element elem = CreateParameterElement(filter.Id, param);
-                        if (elem != null)
-                        {
-                            elem.isVisible = ShouldShowParam(filter, param);
-                            elements.Add(elem);
-                        }
+                        AddAnimationElements(filter, elements);
                     }
                 }
 
@@ -598,7 +601,7 @@ namespace CoreGMIC.UI
                             param.Value = val;
                             FilterManager.SaveFilterParameters(FilterManager.GetFilterById(fId));
                         },
-                        () => FilterManager.GetFilterParameter(fId, pKey)?.Value ?? templateParam.Value,
+                        () => FilterManager.GetFilterParameter(fId, pKey)?.BaseValue ?? templateParam.BaseValue,
                         templateParam.MinValue,
                         templateParam.MaxValue,
                         wholeNumbers: true,
@@ -621,7 +624,7 @@ namespace CoreGMIC.UI
                             param.Value = val;
                             FilterManager.SaveFilterParameters(FilterManager.GetFilterById(fId));
                         },
-                        () => FilterManager.GetFilterParameter(fId, pKey)?.Value ?? templateParam.Value,
+                        () => FilterManager.GetFilterParameter(fId, pKey)?.BaseValue ?? templateParam.BaseValue,
                         templateParam.MinValue,
                         templateParam.MaxValue,
                         wholeNumbers: false,
@@ -629,6 +632,161 @@ namespace CoreGMIC.UI
                         id: elemId
                     );
             }
+        }
+
+        private static void AddAnimationElements(IFilter filter, List<Element> elements)
+        {
+            string fId = filter.Id;
+            bool isFilterActive = FilterManager.ActiveFilter == filter;
+            bool animOn = isFilterActive && FilterAnimationManager.IsFilterAnimationEnabled(fId);
+            FilterParameter initialTarget = FilterAnimationManager.GetSelectedTargetParam(filter);
+            bool initialTargetEnabled = animOn && initialTarget != null && FilterAnimationManager.IsParamEnabled(fId, initialTarget);
+
+            Element masterElem = Blueprints.HorizontalBoolOption(
+                "Animation Mode",
+                "Automatically oscillate selected sliders of this filter.",
+                val =>
+                {
+                    FilterAnimationManager.SetFilterAnimationEnabled(filter, val);
+                    if (!_isUpdatingUi)
+                    {
+                        RefreshParameterVisibility();
+                    }
+                },
+                () => FilterAnimationManager.IsFilterAnimationEnabled(fId),
+                "On",
+                "Off",
+                Id: GetAnimElementId(fId, "enabled")
+            );
+            masterElem.isVisible = isFilterActive;
+            elements.Add(masterElem);
+
+            Element syncFreqElem = Blueprints.HorizontalBoolOption(
+                "Synchronize Freq",
+                "Synchronize the frequency of all enabled animated sliders.",
+                val =>
+                {
+                    FilterAnimationManager.SetSynchronizeFreq(filter, val);
+                    if (!_isUpdatingUi)
+                    {
+                        RefreshParameterVisibility();
+                    }
+                },
+                () => FilterAnimationManager.IsSynchronizeFreq(fId),
+                "On",
+                "Off",
+                Id: GetAnimElementId(fId, "sync_freq")
+            );
+            syncFreqElem.isVisible = animOn && FilterAnimationManager.GetVisibleNumericParameters(filter).Count > 1;
+            elements.Add(syncFreqElem);
+
+            Element targetElem = new HorizontalOption(
+                "Animated Slider",
+                "Select which slider of this filter to configure for animation.",
+                FilterAnimationManager.GetTargetOptionLabels(filter),
+                index =>
+                {
+                    FilterAnimationManager.SetSelectedTargetIndex(filter, index);
+                    if (!_isUpdatingUi)
+                    {
+                        RefreshParameterVisibility();
+                    }
+                },
+                () => FilterAnimationManager.GetSelectedTargetIndex(filter),
+                Id: GetAnimElementId(fId, "target")
+            );
+            targetElem.isVisible = animOn && initialTarget != null;
+            elements.Add(targetElem);
+
+            Element sliderEnabledElem = Blueprints.HorizontalBoolOption(
+                "Animate Selected",
+                "Enable or disable oscillation for the selected slider.",
+                val =>
+                {
+                    FilterParameter target = FilterAnimationManager.GetSelectedTargetParam(filter);
+                    FilterAnimationManager.SetParamEnabled(filter, target, val);
+                    if (!_isUpdatingUi)
+                    {
+                        RefreshParameterVisibility();
+                    }
+                },
+                () =>
+                {
+                    FilterParameter target = FilterAnimationManager.GetSelectedTargetParam(filter);
+                    return target != null && FilterAnimationManager.IsParamEnabled(fId, target);
+                },
+                "On",
+                "Off",
+                Id: GetAnimElementId(fId, "slider_enabled")
+            );
+            sliderEnabledElem.isVisible = animOn && initialTarget != null;
+            elements.Add(sliderEnabledElem);
+
+            Element freqElem = new FilterSlider(
+                "Frequency (Hz)",
+                val =>
+                {
+                    FilterParameter target = FilterAnimationManager.GetSelectedTargetParam(filter);
+                    if (target != null)
+                    {
+                        FilterAnimationManager.SetParamFrequency(filter, target, val);
+                    }
+                },
+                () =>
+                {
+                    FilterParameter target = FilterAnimationManager.GetSelectedTargetParam(filter);
+                    return FilterAnimationManager.GetOrCreateParamSettings(fId, target)?.Frequency ?? FilterAnimationManager.DefaultFrequency;
+                },
+                FilterAnimationManager.MinFrequency,
+                FilterAnimationManager.MaxFrequency,
+                wholeNumbers: false,
+                step: 0.05f,
+                id: GetAnimElementId(fId, "freq")
+            );
+            freqElem.isVisible = initialTargetEnabled;
+            elements.Add(freqElem);
+
+            Element minElem = new DynamicRangeFilterSlider(
+                "Anim Min",
+                val =>
+                {
+                    FilterParameter target = FilterAnimationManager.GetSelectedTargetParam(filter);
+                    if (target != null)
+                    {
+                        FilterAnimationManager.SetParamMin(fId, target, val);
+                    }
+                },
+                () =>
+                {
+                    FilterParameter target = FilterAnimationManager.GetSelectedTargetParam(filter);
+                    return FilterAnimationManager.GetOrCreateParamSettings(fId, target)?.MinValue ?? 0f;
+                },
+                () => FilterAnimationManager.GetSelectedTargetParam(filter),
+                id: GetAnimElementId(fId, "min")
+            );
+            minElem.isVisible = initialTargetEnabled;
+            elements.Add(minElem);
+
+            Element maxElem = new DynamicRangeFilterSlider(
+                "Anim Max",
+                val =>
+                {
+                    FilterParameter target = FilterAnimationManager.GetSelectedTargetParam(filter);
+                    if (target != null)
+                    {
+                        FilterAnimationManager.SetParamMax(fId, target, val);
+                    }
+                },
+                () =>
+                {
+                    FilterParameter target = FilterAnimationManager.GetSelectedTargetParam(filter);
+                    return FilterAnimationManager.GetOrCreateParamSettings(fId, target)?.MaxValue ?? 1f;
+                },
+                () => FilterAnimationManager.GetSelectedTargetParam(filter),
+                id: GetAnimElementId(fId, "max")
+            );
+            maxElem.isVisible = initialTargetEnabled;
+            elements.Add(maxElem);
         }
 
         private static void RefreshParameterVisibility()
@@ -665,19 +823,73 @@ namespace CoreGMIC.UI
 
             foreach (IFilter filter in FilterManager.Filters)
             {
-                if (filter.Parameters == null)
+                if (filter.Parameters != null)
                 {
-                    continue;
-                }
-
-                foreach (FilterParameter param in filter.Parameters)
-                {
-                    Element elem = _menuRef.Find(GetParamElementId(filter.Id, param.Key));
-                    if (elem != null)
+                    foreach (FilterParameter param in filter.Parameters)
                     {
-                        elem.isVisible = ShouldShowParam(filter, param);
+                        Element elem = _menuRef.Find(GetParamElementId(filter.Id, param.Key));
+                        if (elem != null)
+                        {
+                            elem.isVisible = ShouldShowParam(filter, param);
+                        }
                     }
                 }
+
+                if (FilterAnimationManager.HasNumericParameters(filter))
+                {
+                    ApplyAnimationVisibilityFlags(filter);
+                }
+            }
+        }
+
+        private static void ApplyAnimationVisibilityFlags(IFilter filter)
+        {
+            string fId = filter.Id;
+            bool isFilterActive = FilterManager.ActiveFilter == filter;
+            bool animOn = isFilterActive && FilterAnimationManager.IsFilterAnimationEnabled(fId);
+            FilterParameter targetParam = animOn ? FilterAnimationManager.GetSelectedTargetParam(filter) : null;
+            bool targetAnimOn = animOn && targetParam != null && FilterAnimationManager.IsParamEnabled(fId, targetParam);
+
+            Element masterElem = _menuRef.Find(GetAnimElementId(fId, "enabled"));
+            if (masterElem != null)
+            {
+                masterElem.isVisible = isFilterActive;
+            }
+
+            Element syncFreqElem = _menuRef.Find(GetAnimElementId(fId, "sync_freq"));
+            if (syncFreqElem != null)
+            {
+                syncFreqElem.isVisible = animOn && FilterAnimationManager.GetVisibleNumericParameters(filter).Count > 1;
+            }
+
+            if (_menuRef.Find(GetAnimElementId(fId, "target")) is HorizontalOption targetElem)
+            {
+                targetElem.Values = FilterAnimationManager.GetTargetOptionLabels(filter);
+                targetElem.isVisible = animOn && targetParam != null;
+            }
+
+            Element sliderEnabledElem = _menuRef.Find(GetAnimElementId(fId, "slider_enabled"));
+            if (sliderEnabledElem != null)
+            {
+                sliderEnabledElem.isVisible = animOn && targetParam != null;
+            }
+
+            Element freqElem = _menuRef.Find(GetAnimElementId(fId, "freq"));
+            if (freqElem != null)
+            {
+                freqElem.isVisible = targetAnimOn;
+            }
+
+            Element minElem = _menuRef.Find(GetAnimElementId(fId, "min"));
+            if (minElem != null)
+            {
+                minElem.isVisible = targetAnimOn;
+            }
+
+            Element maxElem = _menuRef.Find(GetAnimElementId(fId, "max"));
+            if (maxElem != null)
+            {
+                maxElem.isVisible = targetAnimOn;
             }
         }
 
@@ -699,6 +911,11 @@ namespace CoreGMIC.UI
         private static string GetParamElementId(string filterId, string paramKey)
         {
             return $"param:{filterId}:{paramKey}";
+        }
+
+        private static string GetAnimElementId(string filterId, string subKey)
+        {
+            return $"anim:{filterId}:{subKey}";
         }
 
         private sealed class CornerButtonSpec
@@ -743,9 +960,10 @@ namespace CoreGMIC.UI
             public bool HasBanner => !string.IsNullOrEmpty(BannerPanelId);
         }
 
-        private sealed class FilterSlider : CustomSlider
+        private class FilterSlider : CustomSlider
         {
-            private readonly float _step;
+            protected float StepSize;
+            protected bool SuppressStore;
             private bool _isSnapping;
             private Text _displayLabel;
 
@@ -760,13 +978,13 @@ namespace CoreGMIC.UI
                 string id = "__UseName")
                 : base(name, storeValue, loadValue, minValue, maxValue, wholeNumbers, id)
             {
-                _step = step;
+                StepSize = step;
             }
 
             public override GameObjectRow Create(ContentArea c, Menu Instance, bool AddToList = true)
             {
                 GameObjectRow row = base.Create(c, Instance, AddToList);
-                if (_step > 0f && !wholeNumbers && slider != null)
+                if (slider != null)
                 {
                     slider.onValueChanged.AddListener(OnSliderChangedSnap);
                 }
@@ -798,9 +1016,9 @@ namespace CoreGMIC.UI
                 {
                     valueLabel.text = $"{Mathf.RoundToInt(value)}";
                 }
-                else if (_step > 0f)
+                else if (StepSize > 0f)
                 {
-                    valueLabel.text = FormatWithStep(value, _step);
+                    valueLabel.text = FormatWithStep(value, StepSize);
                 }
                 else
                 {
@@ -858,12 +1076,12 @@ namespace CoreGMIC.UI
 
             private void OnSliderChangedSnap(float rawValue)
             {
-                if (_isSnapping || _step <= 0f || wholeNumbers || slider == null)
+                if (SuppressStore || _isSnapping || StepSize <= 0f || wholeNumbers || slider == null)
                 {
                     return;
                 }
 
-                float stepped = minValue + Mathf.Round((rawValue - minValue) / _step) * _step;
+                float stepped = minValue + Mathf.Round((rawValue - minValue) / StepSize) * StepSize;
                 float snapped = Mathf.Clamp((float)Math.Round(stepped, 4), minValue, maxValue);
                 if (!Mathf.Approximately(slider.value, snapped))
                 {
@@ -890,6 +1108,53 @@ namespace CoreGMIC.UI
                 }
 
                 return val.ToString("F" + decimals, CultureInfo.InvariantCulture);
+            }
+        }
+
+        private sealed class DynamicRangeFilterSlider : FilterSlider
+        {
+            private readonly Func<FilterParameter> _getTarget;
+
+            public DynamicRangeFilterSlider(
+                string name,
+                Action<float> storeValue,
+                Func<float> loadValue,
+                Func<FilterParameter> getTarget,
+                string id = "__UseName")
+                : base(name, storeValue, loadValue, 0f, 1f, wholeNumbers: false, step: 0f, id: id)
+            {
+                _getTarget = getTarget;
+
+                Action<float> originalStore = storeValue;
+                StoreValue = val =>
+                {
+                    if (!SuppressStore)
+                    {
+                        originalStore?.Invoke(val);
+                    }
+                };
+            }
+
+            public override void Update()
+            {
+                SuppressStore = true;
+                try
+                {
+                    FilterParameter target = _getTarget?.Invoke();
+                    if (target != null)
+                    {
+                        minValue = target.MinValue;
+                        maxValue = target.MaxValue;
+                        wholeNumbers = target.Kind == FilterParamKind.Int;
+                        StepSize = wholeNumbers ? 0f : target.Step;
+                    }
+
+                    base.Update();
+                }
+                finally
+                {
+                    SuppressStore = false;
+                }
             }
         }
     }

@@ -32,6 +32,7 @@ namespace CoreGMIC
             ShaderManager.LoadShaders();
             RegisterBuiltInFilters();
             FilterManager.InitializeAll();
+            FilterAnimationManager.Initialize(Settings);
             FilterManager.IsEnabled = Settings.Enabled;
             FilterManager.EnableExperimentalShaders = Settings.EnableExperimentalShaders;
             FilterManager.SetActiveById(Settings.SelectedFilterId);
@@ -73,6 +74,7 @@ namespace CoreGMIC
             FilterManager.Register(new Oldschool8BitsFilter());
             FilterManager.Register(new IsophotesFilter());
             FilterManager.Register(new UltraWarp4PlusFilter());
+            FilterManager.Register(new PlayerSwirlFilter());
         }
 
         private void OnGameCamerasSceneInit(On.GameCameras.orig_SceneInit orig, GameCameras self)
