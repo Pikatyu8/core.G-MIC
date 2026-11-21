@@ -142,11 +142,7 @@ namespace CoreGMIC.UI
                 }
 
                 _menuRef = new Menu("core.G'MIC", elements.ToArray());
-                _menuRef.OnBuilt += (_, _) =>
-                {
-                    RealignMenuTexts();
-                    AdjustRowSpacingByDescription();
-                };
+                _menuRef.OnBuilt += (_, _) => RealignMenuTexts();
                 _menuRef.OnUpdate += (_, _) => RealignMenuTexts();
                 _menuRef.OnReflow += (_, _) => AdjustRowSpacingByDescription();
                 MenuScreen screen = _menuRef.GetMenuScreen(modListMenu);
@@ -297,11 +293,15 @@ namespace CoreGMIC.UI
 
         private static void AdjustRowSpacingByDescription()
         {
-            if (_menuRef?.MenuOrder == null || _menuRef.MenuOrder.Count == 0)
+            if (_menuRef?.menuScreen == null ||
+                !_menuRef.menuScreen.gameObject.activeInHierarchy ||
+                _menuRef.MenuOrder == null ||
+                _menuRef.MenuOrder.Count == 0)
             {
                 return;
             }
 
+            Canvas.ForceUpdateCanvases();
             float cumulativeOffsetY = 0f;
 
             foreach (GameObjectRow row in _menuRef.MenuOrder)
@@ -316,7 +316,7 @@ namespace CoreGMIC.UI
 
                 foreach (GameObject go in row.Row)
                 {
-                    if (go == null || !go.activeSelf)
+                    if (go == null || !go.activeInHierarchy)
                     {
                         continue;
                     }
@@ -346,7 +346,7 @@ namespace CoreGMIC.UI
         private static float GetDescriptionExtraHeight(GameObject go)
         {
             Transform descTf = go.transform.Find("Description");
-            if (descTf == null || !descTf.gameObject.activeSelf)
+            if (descTf == null || !descTf.gameObject.activeInHierarchy)
             {
                 return 0f;
             }
@@ -358,12 +358,12 @@ namespace CoreGMIC.UI
             }
 
             RectTransform descRt = descText.rectTransform;
-            if (descRt.rect.width <= 1f)
+            float width = descRt.rect.width;
+            if (width <= 1f)
             {
-                LayoutRebuilder.ForceRebuildLayoutImmediate(descRt);
+                RectTransform goRt = go.GetComponent<RectTransform>();
+                width = (goRt != null && goRt.rect.width > 1f) ? goRt.rect.width : descRt.sizeDelta.x;
             }
-
-            float width = descRt.rect.width > 1f ? descRt.rect.width : descRt.sizeDelta.x;
             if (width <= 1f)
             {
                 return 0f;
@@ -371,12 +371,18 @@ namespace CoreGMIC.UI
 
             float ppu = descText.pixelsPerUnit > 0f ? descText.pixelsPerUnit : 1f;
             TextGenerationSettings settings = descText.GetGenerationSettings(new Vector2(width, 0f));
+            TextGenerator gen = descText.cachedTextGeneratorForLayout;
+            gen.Populate(descText.text, settings);
+            if (gen.lineCount <= 1)
+            {
+                return 0f;
+            }
 
-            float actualHeight = descText.cachedTextGeneratorForLayout.GetPreferredHeight(descText.text, settings) / ppu;
-            float singleLineHeight = descText.cachedTextGeneratorForLayout.GetPreferredHeight("A", settings) / ppu;
+            float actualHeight = gen.GetPreferredHeight(descText.text, settings) / ppu;
+            float singleLineHeight = gen.GetPreferredHeight("A", settings) / ppu;
 
             float extra = actualHeight - singleLineHeight;
-            return extra > 2f ? (extra + 8f) : 0f;
+            return extra > 2f ? (extra + 6f) : 0f;
         }
 
         private static void PopulateSidePanel()
