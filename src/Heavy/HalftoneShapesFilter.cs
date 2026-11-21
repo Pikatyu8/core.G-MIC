@@ -1,3 +1,12 @@
+// Ported and adapted to C# / HLSL for core.G'MIC from `iain_halftone_shapes`
+// in GreycLab/gmic-community (`include/iain_fergusson.gmic`).
+//
+// Original Copyright (C) Iain Fergusson (http://iainfergusson.co.nz)
+// License: Creative Commons Attribution-NonCommercial-ShareAlike 3.0 New Zealand (CC BY-NC-SA 3.0 NZ)
+// http://creativecommons.org/licenses/by-nc-sa/3.0/nz/
+//
+// Excluded from the main CeCILL v2.1 repository license; remains governed by CC BY-NC-SA 3.0 NZ.
+
 using System;
 using CoreGMIC.Core;
 using UnityEngine;

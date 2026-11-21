@@ -1,3 +1,7 @@
+// PaletteHotBase64 embeds the serialized `_palette_hot` colormap from G'MIC (`gmic_stdlib.gmic`).
+// Copyright (C) David Tschumperlé - GREYC UMR CNRS 6072 (https://gmic.eu)
+// Dual-licensed under CeCILL-C v1 / CeCILL v2.1 (used under CeCILL v2.1).
+
 using System;
 using System.IO;
 using System.IO.Compression;
