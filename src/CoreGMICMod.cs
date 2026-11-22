@@ -84,6 +84,7 @@ namespace CoreGMIC
             FilterManager.Register(new FireEdgesFilter());
             FilterManager.Register(new CrtSubPixelsFilter());
             FilterManager.Register(new NoiseFilter());
+            FilterManager.Register(new WarpByIntensityFilter());
         }
 
         private void OnGameCamerasSceneInit(On.GameCameras.orig_SceneInit orig, GameCameras self)

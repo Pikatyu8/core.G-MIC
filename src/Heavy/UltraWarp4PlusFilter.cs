@@ -8,14 +8,6 @@ namespace CoreGMIC.Heavy
     {
         private const int PlasmaTextureSize = 513;
 
-        private static readonly string[] NoiseTypeChoices =
-        {
-            "Gaussian",
-            "Uniform",
-            "Salt and Pepper",
-            "Poisson"
-        };
-
         private static readonly string[] CorrelatedChoices =
         {
             "Random",
@@ -150,6 +142,8 @@ namespace CoreGMIC.Heavy
             GpuBlur.IsAvailable &&
             GpuNormalize.IsAvailable &&
             GpuChannelOps.IsAvailable &&
+            GpuNoise.IsAvailable &&
+            GpuWarp.IsAvailable &&
             _stats != null && _stats.IsAvailable &&
             _watershed != null && _watershed.IsAvailable &&
             _quadtree != null && _quadtree.IsAvailable;
@@ -327,7 +321,7 @@ namespace CoreGMIC.Heavy
                 "noise_type",
                 "Noise Type",
                 "Noise distribution model.",
-                NoiseTypeChoices,
+                GpuNoise.NoiseTypeChoices,
                 2,
                 v => _noiseType = v));
 
@@ -674,7 +668,7 @@ namespace CoreGMIC.Heavy
                 Material.SetFloat("_Gamma", 1f);
                 Material.SetFloat("_HueShiftDeg", globalHueDeg);
                 Material.SetBuffer("_StatsBuf", _stats.StatsBuffer);
-                Graphics.Blit(coreOut, destination, Material, 3);
+                Graphics.Blit(coreOut, destination, Material, 1);
             }
             finally
             {
@@ -773,7 +767,7 @@ namespace CoreGMIC.Heavy
                         {
                             Material.SetTexture("_PlasmaTex", _plasmaTex);
                             Material.SetFloat("_PlasmaAlpha", _plasmaAlpha ? 1f : 0f);
-                            Graphics.Blit(src, dst, Material, 5);
+                            Graphics.Blit(src, dst, Material, 3);
                         },
                         valueAction: 0,
                         stats: _stats);
@@ -884,15 +878,15 @@ namespace CoreGMIC.Heavy
                         curr,
                         warpOut,
                         _warpChannels,
-                        (src, dst) =>
-                        {
-                            Material.SetVector("_WarpScale", new Vector4(a, b, 0f, 0f));
-                            Material.SetVector("_WarpOffset", new Vector4(c, d, 0f, 0f));
-                            Material.SetFloat("_Correlated", corr > 0 ? 1f : 0f);
-                            Material.SetInt("_BoundaryMode", bound);
-                            Material.SetFloat("_Bidirectional", _warpDirectionMode == 2 ? 1f : 0f);
-                            Graphics.Blit(src, dst, Material, 1);
-                        },
+                        (src, dst) => GpuWarp.WarpByIntensity(
+                            src,
+                            dst,
+                            new Vector2(a, b),
+                            new Vector2(c, d),
+                            correlated: corr > 0,
+                            interpMode: 1,
+                            boundaryMode: bound,
+                            bidirectional: _warpDirectionMode == 2),
                         valueAction: 0,
                         stats: _stats);
                     curr = warpOut;
@@ -909,7 +903,7 @@ namespace CoreGMIC.Heavy
                             curr,
                             negOut,
                             nch,
-                            (src, dst) => Graphics.Blit(src, dst, Material, 2),
+                            (src, dst) => Graphics.Blit(src, dst, Material, 0),
                             valueAction: 0,
                             stats: _stats);
                         curr = negOut;
@@ -934,7 +928,7 @@ namespace CoreGMIC.Heavy
                         Material.SetFloat("_Gamma", gammaExp);
                         Material.SetFloat("_HueShiftDeg", hueDeg);
                         Material.SetBuffer("_StatsBuf", _stats.StatsBuffer);
-                        Graphics.Blit(curr, adjOut, Material, 3);
+                        Graphics.Blit(curr, adjOut, Material, 1);
                         curr = adjOut;
                     }
 
@@ -970,7 +964,7 @@ namespace CoreGMIC.Heavy
                 RenderTexture hsvOut = NextRt(curr);
                 Material.SetVector("_HsvMul", new Vector4(j, k, l, 0f));
                 Material.SetVector("_HsvAdd", new Vector4(hh, ss, vv, 0f));
-                Graphics.Blit(curr, hsvOut, Material, 4);
+                Graphics.Blit(curr, hsvOut, Material, 2);
                 curr = hsvOut;
 
                 // Final Normalise
@@ -1007,13 +1001,7 @@ namespace CoreGMIC.Heavy
                 source,
                 destination,
                 _noiseChannels,
-                (src, dst) =>
-                {
-                    Material.SetInt("_NoiseType", _noiseType);
-                    Material.SetFloat("_NoiseAmount", noiseAmt);
-                    Material.SetInt("_NoiseSeed", unchecked((int)noiseSeed));
-                    Graphics.Blit(src, dst, Material, 0);
-                },
+                (src, dst) => GpuNoise.ApplyNoise(src, dst, noiseAmt, _noiseType, noiseSeed),
                 valueAction: 1,
                 stats: _stats);
         }

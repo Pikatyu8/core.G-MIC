@@ -25,32 +25,7 @@ Shader "CoreGMIC/Edges"
         ZWrite Off
         ZTest Always
 
-        // Pass 0: G'MIC gradient_norm (scheme=0 centered, boundary=1 Neumann)
-        Pass
-        {
-            CGPROGRAM
-            #pragma target 4.5
-            #pragma vertex vert
-            #pragma fragment fragGradientNorm
-
-            float4 fragGradientNorm(v2f i) : SV_Target
-            {
-                float2 tx = _MainTex_TexelSize.xy;
-                float3 xP = tex2Dlod(_MainTex, float4(saturate(i.uv + float2(tx.x, 0.0)), 0.0, 0.0)).rgb;
-                float3 xM = tex2Dlod(_MainTex, float4(saturate(i.uv - float2(tx.x, 0.0)), 0.0, 0.0)).rgb;
-                float3 yP = tex2Dlod(_MainTex, float4(saturate(i.uv + float2(0.0, tx.y)), 0.0, 0.0)).rgb;
-                float3 yM = tex2Dlod(_MainTex, float4(saturate(i.uv - float2(0.0, tx.y)), 0.0, 0.0)).rgb;
-
-                float3 dx = 0.5 * (xP - xM);
-                float3 dy = 0.5 * (yP - yM);
-                float gn = sqrt(dot(dx, dx) + dot(dy, dy));
-
-                return float4(gn, gn, gn, 1.0);
-            }
-            ENDCG
-        }
-
-        // Pass 1: Threshold (>= Threshold%) and Init JFA Seeds for distance 0
+        // Pass 0: Threshold (>= Threshold%) and Init JFA Seeds for distance 0
         Pass
         {
             CGPROGRAM
@@ -75,7 +50,7 @@ Shader "CoreGMIC/Edges"
             ENDCG
         }
 
-        // Pass 2: Equalize -> Negate -> Cut [30%, 70%] -> Normalize [0, 1] -> Optional Negative
+        // Pass 1: Equalize -> Negate -> Cut [30%, 70%] -> Normalize [0, 1] -> Optional Negative
         Pass
         {
             CGPROGRAM

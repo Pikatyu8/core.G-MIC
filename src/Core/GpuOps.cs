@@ -671,8 +671,37 @@ namespace CoreGMIC.Core
                 return;
             }
 
+            if (amplitude <= 0.01f)
+            {
+                if (source != destination)
+                {
+                    Graphics.Blit(source, destination);
+                }
+                return;
+            }
+
+            int passes = Mathf.Clamp(Mathf.CeilToInt(amplitude / 30f), 1, 6);
+            float stepDl = Mathf.Max(0.25f, dl * Mathf.Sqrt(amplitude / passes));
+            SmoothPasses(source, destination, passes, sharpness, anisotropy, alpha, sigma, stepDl);
+        }
+
+        public static void SmoothPasses(
+            RenderTexture source,
+            RenderTexture destination,
+            int passes,
+            float sharpness = 0f,
+            float anisotropy = 1f,
+            float alpha = 0f,
+            float sigma = 1.1f,
+            float dl = 0.8f)
+        {
+            if (source == null || destination == null)
+            {
+                return;
+            }
+
             Material mat = GpuOpsResources.OpsMaterial;
-            if (mat == null || amplitude <= 0.01f)
+            if (mat == null || passes <= 0 || dl <= 0.001f)
             {
                 if (source != destination)
                 {
@@ -685,9 +714,7 @@ namespace CoreGMIC.Core
             int h = source.height;
             RenderTextureFormat colorFormat = GpuUtils.ColorFormat;
             RenderTextureFormat tensorFormat = GpuUtils.FloatFormat;
-
-            int passes = Mathf.Clamp(Mathf.CeilToInt(amplitude / 30f), 1, 6);
-            float stepDl = Mathf.Max(0.25f, dl * Mathf.Sqrt(amplitude / passes));
+            float stepDl = Mathf.Max(0.25f, dl);
 
             RenderTexture pingA = null;
             RenderTexture pingB = null;
@@ -840,6 +867,62 @@ namespace CoreGMIC.Core
                 mat.SetFloat("_NoiseAmount", amount);
                 mat.SetInt("_NoiseSeed", unchecked((int)seed));
                 Graphics.Blit(inputRt, destination, mat, 17);
+            }
+            finally
+            {
+                GpuUtils.ReleaseTemp(scratch);
+            }
+        }
+    }
+
+    public static class GpuWarp
+    {
+        public static bool IsAvailable => GpuOpsResources.IsAvailable;
+
+        public static void WarpByIntensity(
+            RenderTexture source,
+            RenderTexture destination,
+            Vector2 scale,
+            Vector2 offset,
+            bool correlated = false,
+            int interpMode = 1,
+            int boundaryMode = 3,
+            bool bidirectional = false)
+        {
+            if (source == null || destination == null)
+            {
+                return;
+            }
+
+            Material mat = GpuOpsResources.OpsMaterial;
+            if (mat == null)
+            {
+                if (source != destination)
+                {
+                    Graphics.Blit(source, destination);
+                }
+                return;
+            }
+
+            RenderTexture scratch = null;
+            RenderTexture inputRt = source;
+            if (source == destination)
+            {
+                RenderTextureReadWrite rw = source.sRGB ? RenderTextureReadWrite.sRGB : RenderTextureReadWrite.Linear;
+                scratch = GpuUtils.GetTempRt(source.width, source.height, source.format, source.filterMode, rw);
+                Graphics.Blit(source, scratch);
+                inputRt = scratch;
+            }
+
+            try
+            {
+                mat.SetVector("_WarpScale", scale);
+                mat.SetVector("_WarpOffset", offset);
+                mat.SetFloat("_Correlated", correlated ? 1f : 0f);
+                mat.SetInt("_WarpInterp", interpMode);
+                mat.SetInt("_BoundaryMode", boundaryMode);
+                mat.SetFloat("_Bidirectional", bidirectional ? 1f : 0f);
+                Graphics.Blit(inputRt, destination, mat, 18);
             }
             finally
             {

@@ -11,13 +11,8 @@ Shader "CoreGMIC/ChalkItUp"
 
     sampler2D _AuxTex;
     sampler2D _AvgTex;
-    sampler2D _TensorTex;
     sampler2D _BaseTex;
 
-    float _Sigma;
-    float _Sharpness;
-    float _Anisotropy;
-    float _Dl;
     float _ColorMul;
 
     int _MorphoSize;
@@ -28,8 +23,6 @@ Shader "CoreGMIC/ChalkItUp"
     float _SpreadY;
 
     #define GMIC_USE_HASH 1
-    #define GMIC_USE_SOBEL 1
-    #define GMIC_USE_TENSOR 1
     #include "GmicColorSpaces.cginc"
     ENDCG
 
@@ -200,169 +193,6 @@ Shader "CoreGMIC/ChalkItUp"
             {
                 float4 ycc = tex2D(_MainTex, i.uv);
                 return float4(YCbCrToRgb(ycc.rgb), ycc.a);
-            }
-            ENDCG
-        }
-
-        // Pass 7: Structure Tensor (Jxx, Jxy, Jyy)
-        Pass
-        {
-            CGPROGRAM
-            #pragma target 4.0
-            #pragma vertex vert
-            #pragma fragment fragStructureTensor
-
-            float4 fragStructureTensor(v2f i) : SV_Target
-            {
-                float3 dx, dy;
-                ComputeSobelGradients(i.uv, _MainTex_TexelSize.xy, dx, dy);
-                return float4(dot(dx, dx), dot(dx, dy), dot(dy, dy), 1.0);
-            }
-            ENDCG
-        }
-
-        // Pass 8: Separable Tensor Gaussian Blur Horizontal
-        Pass
-        {
-            CGPROGRAM
-            #pragma target 4.0
-            #pragma vertex vert
-            #pragma fragment fragBlurTensorH
-
-            float4 fragBlurTensorH(v2f i) : SV_Target
-            {
-                float stepPx = max(0.5, _Sigma * 1.2);
-                float2 stepUv = float2(_MainTex_TexelSize.x * stepPx, 0.0);
-
-                static const float weights[5] = { 0.227027, 0.1945946, 0.1216216, 0.054054, 0.016216 };
-                float4 accum = tex2Dlod(_MainTex, float4(i.uv, 0.0, 0.0)) * weights[0];
-
-                [unroll]
-                for (int k = 1; k <= 4; k++)
-                {
-                    float2 off = stepUv * (float)k;
-                    accum += tex2Dlod(_MainTex, float4(saturate(i.uv + off), 0.0, 0.0)) * weights[k];
-                    accum += tex2Dlod(_MainTex, float4(saturate(i.uv - off), 0.0, 0.0)) * weights[k];
-                }
-                return accum;
-            }
-            ENDCG
-        }
-
-        // Pass 9: Separable Tensor Gaussian Blur Vertical
-        Pass
-        {
-            CGPROGRAM
-            #pragma target 4.0
-            #pragma vertex vert
-            #pragma fragment fragBlurTensorV
-
-            float4 fragBlurTensorV(v2f i) : SV_Target
-            {
-                float stepPx = max(0.5, _Sigma * 1.2);
-                float2 stepUv = float2(0.0, _MainTex_TexelSize.y * stepPx);
-
-                static const float weights[5] = { 0.227027, 0.1945946, 0.1216216, 0.054054, 0.016216 };
-                float4 accum = tex2Dlod(_MainTex, float4(i.uv, 0.0, 0.0)) * weights[0];
-
-                [unroll]
-                for (int k = 1; k <= 4; k++)
-                {
-                    float2 off = stepUv * (float)k;
-                    accum += tex2Dlod(_MainTex, float4(saturate(i.uv + off), 0.0, 0.0)) * weights[k];
-                    accum += tex2Dlod(_MainTex, float4(saturate(i.uv - off), 0.0, 0.0)) * weights[k];
-                }
-                return accum;
-            }
-            ENDCG
-        }
-
-        // Pass 10: Curved Streamline LIC Anisotropic Smooth
-        Pass
-        {
-            CGPROGRAM
-            #pragma target 4.0
-            #pragma vertex vert
-            #pragma fragment fragAnisotropicSmooth
-
-            float4 fragAnisotropicSmooth(v2f i) : SV_Target
-            {
-                float4 center = tex2Dlod(_MainTex, float4(i.uv, 0.0, 0.0));
-                float centerEdge;
-                float2 t0 = GetTangentAndEdge(i.uv, centerEdge);
-                float2 n0 = float2(-t0.y, t0.x);
-
-                float anisoNorm = saturate(_Anisotropy * 2.0);
-                float baseStepPx = max(0.25, _Dl * 0.35);
-                float sharpColor = _Sharpness * 0.00045;
-                float sharpEdge = _Sharpness * 0.0015;
-
-                float3 sumRgb = center.rgb;
-                float sumW = 1.0;
-
-                float2 posF = i.uv;
-                float2 curTF = t0;
-                [unroll]
-                for (int kf = 1; kf <= 10; kf++)
-                {
-                    float stepEdge;
-                    float2 nextT = GetTangentAndEdge(posF, stepEdge);
-                    if (dot(nextT, curTF) < 0.0) nextT = -nextT;
-                    curTF = nextT;
-
-                    float brake = pow(1.0 + stepEdge, -sharpEdge);
-                    posF = saturate(posF + curTF * (_MainTex_TexelSize.xy * baseStepPx * lerp(1.0, brake, 0.35)));
-
-                    float3 sRgb = tex2Dlod(_MainTex, float4(posF, 0.0, 0.0)).rgb;
-                    float3 dc = sRgb - center.rgb;
-                    float edgeJump = abs(stepEdge - centerEdge);
-                    float edgeGuard = exp(-edgeJump * 0.04 * (_Sharpness * 0.01));
-                    float w = exp(-0.02 * (float)(kf * kf)) * exp(-dot(dc, dc) * sharpColor) * edgeGuard;
-
-                    sumRgb += sRgb * w;
-                    sumW += w;
-                }
-
-                float2 posB = i.uv;
-                float2 curTB = -t0;
-                [unroll]
-                for (int kb = 1; kb <= 10; kb++)
-                {
-                    float stepEdge;
-                    float2 nextT = GetTangentAndEdge(posB, stepEdge);
-                    if (dot(nextT, curTB) < 0.0) nextT = -nextT;
-                    curTB = nextT;
-
-                    float brake = pow(1.0 + stepEdge, -sharpEdge);
-                    posB = saturate(posB + curTB * (_MainTex_TexelSize.xy * baseStepPx * lerp(1.0, brake, 0.35)));
-
-                    float3 sRgb = tex2Dlod(_MainTex, float4(posB, 0.0, 0.0)).rgb;
-                    float3 dc = sRgb - center.rgb;
-                    float edgeJump = abs(stepEdge - centerEdge);
-                    float edgeGuard = exp(-edgeJump * 0.04 * (_Sharpness * 0.01));
-                    float w = exp(-0.02 * (float)(kb * kb)) * exp(-dot(dc, dc) * sharpColor) * edgeGuard;
-
-                    sumRgb += sRgb * w;
-                    sumW += w;
-                }
-
-                float lateralScale = (1.0 - anisoNorm) * pow(1.0 + centerEdge, -sharpEdge * 1.5);
-                if (lateralScale > 0.02)
-                {
-                    float2 latOff = n0 * (_MainTex_TexelSize.xy * baseStepPx * 1.4 * lateralScale);
-                    float3 sP = tex2Dlod(_MainTex, float4(saturate(i.uv + latOff), 0.0, 0.0)).rgb;
-                    float3 sM = tex2Dlod(_MainTex, float4(saturate(i.uv - latOff), 0.0, 0.0)).rgb;
-
-                    float3 dcP = sP - center.rgb;
-                    float3 dcM = sM - center.rgb;
-                    float wP = 0.65 * lateralScale * exp(-dot(dcP, dcP) * sharpColor);
-                    float wM = 0.65 * lateralScale * exp(-dot(dcM, dcM) * sharpColor);
-
-                    sumRgb += sP * wP + sM * wM;
-                    sumW += wP + wM;
-                }
-
-                return float4(sumRgb / max(1e-5, sumW), center.a);
             }
             ENDCG
         }

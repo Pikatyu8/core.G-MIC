@@ -14,6 +14,7 @@ Shader "CoreGMIC/Ops"
     #define GMIC_USE_HASH 1
     #define GMIC_USE_SOBEL 1
     #define GMIC_USE_TENSOR 1
+    #define GMIC_USE_BOUNDARY 1
     #include "GmicColorSpaces.cginc"
 
     StructuredBuffer<uint> _ParentBuffer;
@@ -63,6 +64,7 @@ Shader "CoreGMIC/Ops"
             return val01;
         }
 
+// Poisson approximation (noise amount scales signal level)
         float scale = max(1e-4, amount / 255.0);
         float lambda = max(0.0, val01 * 255.0 * scale);
         float zP = sqrt(-2.0 * log(u1)) * cos(6.28318530718 * u2);
@@ -70,6 +72,57 @@ Shader "CoreGMIC/Ops"
         return sampleP / (255.0 * scale);
     }
 
+    float2 _WarpScale;
+    float2 _WarpOffset;
+    float _Correlated;
+    int _WarpInterp;
+    int _BoundaryMode;
+    float _Bidirectional;
+
+    float4 SampleWarpInterp(float2 uv, int boundaryMode, int interpMode)
+    {
+        if (interpMode == 0)
+        {
+            float2 sz = _MainTex_TexelSize.zw;
+            float2 tx = _MainTex_TexelSize.xy;
+            if (boundaryMode == 0)
+            {
+                if (uv.x < 0.0 || uv.x > 1.0 || uv.y < 0.0 || uv.y > 1.0)
+                    return float4(0.0, 0.0, 0.0, 0.0);
+            }
+            else if (boundaryMode == 1)
+            {
+                uv = saturate(uv);
+            }
+            else if (boundaryMode == 2)
+            {
+                uv = frac(uv);
+            }
+            else
+            {
+                uv = 1.0 - abs(frac(uv * 0.5) * 2.0 - 1.0);
+            }
+
+            uv = (floor(clamp(uv * sz, float2(0.0, 0.0), sz - 1.0)) + 0.5) * tx;
+            return tex2Dlod(_MainTex, float4(uv, 0.0, 0.0));
+        }
+
+        return SampleWithBoundary(_MainTex, uv, boundaryMode);
+    }
+
+    float4 SampleWarpPx(float2 uv, float2 dispPx, float2 tx, int boundaryMode, int interpMode, float bidirectional)
+    {
+        if (bidirectional <= 0.5)
+        {
+            return SampleWarpInterp(uv + dispPx * tx, boundaryMode, interpMode);
+        }
+
+        float4 sPP = SampleWarpInterp(uv + float2( dispPx.x,  dispPx.y) * tx, boundaryMode, interpMode);
+        float4 sMP = SampleWarpInterp(uv + float2(-dispPx.x,  dispPx.y) * tx, boundaryMode, interpMode);
+        float4 sPM = SampleWarpInterp(uv + float2( dispPx.x, -dispPx.y) * tx, boundaryMode, interpMode);
+        float4 sMM = SampleWarpInterp(uv + float2(-dispPx.x, -dispPx.y) * tx, boundaryMode, interpMode);
+        return 0.25 * (sPP + sMP + sPM + sMM);
+    }
     float4 RunGaussian1DRgba(float2 uv, float2 axisTexel)
     {
         float sigma = max(0.25, _SigmaPx);
@@ -576,6 +629,36 @@ Shader "CoreGMIC/Ops"
                 float g = ApplyNoiseScalar(c.g, _NoiseAmount, _NoiseType, baseSeed ^ 0x2222u);
                 float b = ApplyNoiseScalar(c.b, _NoiseAmount, _NoiseType, baseSeed ^ 0x3333u);
                 return float4(r, g, b, c.a);
+            }
+            ENDCG
+        }
+
+        // Pass 18: G'MIC _fx_warp_by_intensity
+        Pass
+        {
+            CGPROGRAM
+            #pragma target 4.0
+            #pragma vertex vert
+            #pragma fragment fragWarpByIntensity
+
+            float4 fragWarpByIntensity(v2f i) : SV_Target
+            {
+                float2 tx = _MainTex_TexelSize.xy;
+                float4 c = tex2Dlod(_MainTex, float4(i.uv, 0.0, 0.0));
+
+                if (_Correlated > 0.5)
+                {
+                    float ni = length(c.rgb) * 255.0;
+                    float2 dispPx = float2((ni - _WarpOffset.x) * _WarpScale.x, (ni - _WarpOffset.y) * _WarpScale.y);
+                    return SampleWarpPx(i.uv, dispPx, tx, _BoundaryMode, _WarpInterp, _Bidirectional);
+                }
+
+                float4 c255 = c * 255.0;
+                float r = SampleWarpPx(i.uv, float2((c255.r - _WarpOffset.x) * _WarpScale.x, (c255.r - _WarpOffset.y) * _WarpScale.y), tx, _BoundaryMode, _WarpInterp, _Bidirectional).r;
+                float g = SampleWarpPx(i.uv, float2((c255.g - _WarpOffset.x) * _WarpScale.x, (c255.g - _WarpOffset.y) * _WarpScale.y), tx, _BoundaryMode, _WarpInterp, _Bidirectional).g;
+                float b = SampleWarpPx(i.uv, float2((c255.b - _WarpOffset.x) * _WarpScale.x, (c255.b - _WarpOffset.y) * _WarpScale.y), tx, _BoundaryMode, _WarpInterp, _Bidirectional).b;
+                float a = SampleWarpPx(i.uv, float2((c255.a - _WarpOffset.x) * _WarpScale.x, (c255.a - _WarpOffset.y) * _WarpScale.y), tx, _BoundaryMode, _WarpInterp, _Bidirectional).a;
+                return float4(r, g, b, a);
             }
             ENDCG
         }

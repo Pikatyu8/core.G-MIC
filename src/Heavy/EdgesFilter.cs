@@ -16,7 +16,12 @@ namespace CoreGMIC.Heavy
         public override string Description => "Generic edge detection filter.";
         public override FilterCategory Category => FilterCategory.Standard;
         public override bool IsAvailable =>
-            base.IsAvailable && GpuBlur.IsAvailable && GpuJfa.IsAvailable && _stats != null && _stats.IsAvailable;
+            base.IsAvailable &&
+            GpuBlur.IsAvailable &&
+            GpuGradientNorm.IsAvailable &&
+            GpuJfa.IsAvailable &&
+            _stats != null &&
+            _stats.IsAvailable;
 
         public EdgesFilter()
         {
@@ -82,7 +87,7 @@ namespace CoreGMIC.Heavy
 
                 // 2. gradient_norm + b 0.5
                 gradRt = GpuUtils.GetTempRt(w, h, floatFormat);
-                Graphics.Blit(preGrad, gradRt, Material, 0);
+                GpuGradientNorm.ComputeGradientNorm(preGrad, gradRt, scalarMode: false);
                 GpuBlur.BlurInPlace(gradRt, 0.5f);
 
                 // 3. Min/Max of blurred gradient_norm for >= threshold%
@@ -94,7 +99,7 @@ namespace CoreGMIC.Heavy
 
                 Material.SetFloat("_ThresholdPct", _threshold);
                 Material.SetBuffer("_StatsBuf", _stats.StatsBuffer);
-                Graphics.Blit(gradRt, jfaA, Material, 1);
+                Graphics.Blit(gradRt, jfaA, Material, 0);
 
                 RenderTexture jfaOut = GpuJfa.Run(jfaA, jfaB, maxStep: 128);
 
@@ -110,7 +115,7 @@ namespace CoreGMIC.Heavy
                 Material.SetBuffer("_CdfBuffer", _stats.CdfBuffer);
                 Material.SetTexture("_BaseTex", source);
                 Material.SetFloat("_NegativeColors", _negativeColors ? 1f : 0f);
-                Graphics.Blit(distRt, destination, Material, 2);
+                Graphics.Blit(distRt, destination, Material, 1);
             }
             finally
             {

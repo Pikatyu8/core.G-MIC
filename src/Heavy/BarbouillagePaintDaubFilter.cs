@@ -41,7 +41,8 @@ namespace CoreGMIC.Heavy
         public override string DisplayName => "Barbouillage Daub";
         public override string Description => "Painterly engraving and anisotropic paint-daub stylization (GPU Compute equalize + LIC).";
         public override FilterCategory Category => FilterCategory.Heavy;
-        public override bool IsAvailable => base.IsAvailable && _stats != null && _stats.IsAvailable;
+        public override bool IsAvailable =>
+            base.IsAvailable && GpuAnisoSmooth.IsAvailable && _stats != null && _stats.IsAvailable;
 
         public BarbouillagePaintDaubFilter()
         {
@@ -140,22 +141,16 @@ namespace CoreGMIC.Heavy
         {
             int w = source.width;
             int h = source.height;
-
             RenderTextureFormat colorFormat = GpuUtils.ColorFormat;
-            RenderTextureFormat tensorFormat = GpuUtils.FloatFormat;
 
             RenderTexture baseRt = null;
             RenderTexture rtA = null;
             RenderTexture rtB = null;
-            RenderTexture tensorA = null;
-            RenderTexture tensorB = null;
 
             try
             {
                 rtA = GpuUtils.GetTempRt(w, h, colorFormat);
                 rtB = GpuUtils.GetTempRt(w, h, colorFormat);
-                tensorA = GpuUtils.GetTempRt(w, h, tensorFormat);
-                tensorB = GpuUtils.GetTempRt(w, h, tensorFormat);
 
                 // 1. Optional plasma HSL remix (Pass 0).
                 RenderTexture baseSource = source;
@@ -194,15 +189,7 @@ namespace CoreGMIC.Heavy
                     edgeNext = (edgeCurr == rtA) ? rtB : rtA;
                 }
 
-                Material.SetFloat("_Sigma", 1.2f);
-                Material.SetFloat("_Sharpness", 100f);
-                Material.SetFloat("_Anisotropy", 0.45f);
-                Material.SetFloat("_Dl", 5.5f);
-                Graphics.Blit(edgeCurr, tensorA, Material, 5);
-                Graphics.Blit(tensorA, tensorB, Material, 6);
-                Graphics.Blit(tensorB, tensorA, Material, 7);
-                Material.SetTexture("_TensorTex", tensorA);
-                Graphics.Blit(edgeCurr, edgeNext, Material, 8);
+                GpuAnisoSmooth.SmoothPasses(edgeCurr, edgeNext, passes: 1, sharpness: 100f, anisotropy: 0.45f, alpha: 0f, sigma: 1.2f, dl: 5.5f);
                 edgeCurr = edgeNext;
                 edgeNext = (edgeCurr == rtA) ? rtB : rtA;
 
@@ -212,32 +199,19 @@ namespace CoreGMIC.Heavy
                 RenderTexture paintCurr = edgeNext;
                 RenderTexture paintNext = (paintCurr == rtA) ? rtB : rtA;
 
-                // 4. Anisotropic paint-daub smooth (structure tensor + separable blur + curved LIC passes).
+                // 4. Anisotropic paint-daub smooth via shared GpuAnisoSmooth.
                 if (_amplitude > 0 && _dl > 0.01f)
                 {
-                    Material.SetFloat("_Sigma", _sigma);
-                    Material.SetFloat("_Sharpness", _sharpness);
-                    Material.SetFloat("_Anisotropy", _anisotropy);
-                    Material.SetFloat("_Dl", _dl);
-
-                    for (int passIdx = 0; passIdx < _amplitude; passIdx++)
-                    {
-                        Graphics.Blit(paintCurr, tensorA, Material, 5);
-
-                        RenderTexture smoothedTensor = tensorA;
-                        if (_sigma > 0.05f)
-                        {
-                            Graphics.Blit(tensorA, tensorB, Material, 6);
-                            Graphics.Blit(tensorB, tensorA, Material, 7);
-                            smoothedTensor = tensorA;
-                        }
-
-                        Material.SetTexture("_TensorTex", smoothedTensor);
-                        Graphics.Blit(paintCurr, paintNext, Material, 8);
-
-                        paintCurr = paintNext;
-                        paintNext = (paintCurr == rtA) ? rtB : rtA;
-                    }
+                    GpuAnisoSmooth.SmoothPasses(
+                        paintCurr,
+                        paintNext,
+                        passes: _amplitude,
+                        sharpness: _sharpness,
+                        anisotropy: _anisotropy,
+                        alpha: 0f,
+                        sigma: _sigma,
+                        dl: _dl);
+                    paintCurr = paintNext;
                 }
 
                 // 5. Final normalize [0, 1] + optional histogram equalize (Pass 2).
@@ -252,8 +226,6 @@ namespace CoreGMIC.Heavy
                 GpuUtils.ReleaseTemp(baseRt);
                 GpuUtils.ReleaseTemp(rtA);
                 GpuUtils.ReleaseTemp(rtB);
-                GpuUtils.ReleaseTemp(tensorA);
-                GpuUtils.ReleaseTemp(tensorB);
             }
         }
 

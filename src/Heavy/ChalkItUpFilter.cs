@@ -48,7 +48,11 @@ namespace CoreGMIC.Heavy
         public override string Description => "Chalk-and-pastel stylization with local normalization, JFA watershed, morphology, and spread.";
         public override FilterCategory Category => FilterCategory.Heavy;
         public override bool IsAvailable =>
-            base.IsAvailable && GpuChannelOps.IsAvailable && _watershed != null && _watershed.IsAvailable;
+            base.IsAvailable &&
+            GpuChannelOps.IsAvailable &&
+            GpuAnisoSmooth.IsAvailable &&
+            _watershed != null &&
+            _watershed.IsAvailable;
 
         public ChalkItUpFilter()
         {
@@ -218,31 +222,29 @@ namespace CoreGMIC.Heavy
                     curr = rgbOut;
                 }
 
-                // 2. fx_smooth_anisotropic
+                // 2. fx_smooth_anisotropic via shared GpuAnisoSmooth
                 if (_detailsScale > 0.01f)
                 {
-                    Material.SetFloat("_Sigma", _detailsScale);
-                    Material.SetFloat("_Sharpness", 100f * _detailsScale);
-                    Material.SetFloat("_Anisotropy", 0.2f);
-                    Material.SetFloat("_Dl", 2f * _detailsScale);
-
-                    Graphics.Blit(curr, auxA, Material, 7);
-                    Graphics.Blit(auxA, auxB, Material, 8);
-                    Graphics.Blit(auxB, auxA, Material, 9);
-
                     RenderTexture next = NextColorRt(curr);
-                    Material.SetTexture("_TensorTex", auxA);
-                    Graphics.Blit(curr, next, Material, 10);
+                    GpuAnisoSmooth.SmoothPasses(
+                        curr,
+                        next,
+                        passes: 1,
+                        sharpness: 100f * _detailsScale,
+                        anisotropy: 0.2f,
+                        alpha: 0f,
+                        sigma: _detailsScale,
+                        dl: 2f * _detailsScale);
                     curr = next;
                 }
 
                 // 3. fx_mix_lab
                 Material.SetFloat("_ColorMul", _color);
-                Graphics.Blit(curr, auxA, Material, 11);
-                Graphics.Blit(auxA, auxB, Material, 12);
-                Graphics.Blit(auxB, auxA, Material, 13);
+                Graphics.Blit(curr, auxA, Material, 7);
+                Graphics.Blit(auxA, auxB, Material, 8);
+                Graphics.Blit(auxB, auxA, Material, 9);
                 RenderTexture labOut = NextColorRt(curr);
-                Graphics.Blit(auxA, labOut, Material, 14);
+                Graphics.Blit(auxA, labOut, Material, 10);
                 curr = labOut;
 
                 // 4. Shared GPU watershed segmentation
@@ -253,21 +255,19 @@ namespace CoreGMIC.Heavy
                     curr = next;
                 }
 
-                // 5. Final smooth in fx_painting
+                // 5. Final smooth via shared GpuAnisoSmooth
                 if (_smoothness > 0.5f)
                 {
-                    Material.SetFloat("_Sigma", 1f);
-                    Material.SetFloat("_Sharpness", _smoothness);
-                    Material.SetFloat("_Anisotropy", 0f);
-                    Material.SetFloat("_Dl", 1f);
-
-                    Graphics.Blit(curr, auxA, Material, 7);
-                    Graphics.Blit(auxA, auxB, Material, 8);
-                    Graphics.Blit(auxB, auxA, Material, 9);
-
                     RenderTexture next = NextColorRt(curr);
-                    Material.SetTexture("_TensorTex", auxA);
-                    Graphics.Blit(curr, next, Material, 10);
+                    GpuAnisoSmooth.SmoothPasses(
+                        curr,
+                        next,
+                        passes: 1,
+                        sharpness: _smoothness,
+                        anisotropy: 0f,
+                        alpha: 0f,
+                        sigma: 1f,
+                        dl: 1f);
                     curr = next;
                 }
 
@@ -294,7 +294,7 @@ namespace CoreGMIC.Heavy
                 Material.SetTexture("_BaseTex", auxA);
                 Material.SetInt("_MorphoAction", _action);
                 Material.SetFloat("_InvertColors", _invertColors ? 1f : 0f);
-                Graphics.Blit(morphoResult, combineOut, Material, 18);
+                Graphics.Blit(morphoResult, combineOut, Material, 14);
 
                 RenderTexture mergedMorpho = (combineOut == rtA) ? rtB : rtA;
                 GpuChannelOps.DecodeAndMerge(extraA, combineOut, mergedMorpho, _channelMorpho);
@@ -308,7 +308,7 @@ namespace CoreGMIC.Heavy
 
                     Material.SetFloat("_SpreadX", _xVariations);
                     Material.SetFloat("_SpreadY", _yVariations);
-                    Graphics.Blit(auxA, auxB, Material, 19);
+                    Graphics.Blit(auxA, auxB, Material, 15);
 
                     GpuChannelOps.DecodeAndMerge(extraA, auxB, destination, _channelSpread);
                 }
@@ -354,8 +354,8 @@ namespace CoreGMIC.Heavy
             if (!_octagonalShape)
             {
                 Material.SetInt("_MorphoSize", _size);
-                Graphics.Blit(input, scratch, Material, 15);
-                Graphics.Blit(scratch, pingA, Material, 16);
+                Graphics.Blit(input, scratch, Material, 11);
+                Graphics.Blit(scratch, pingA, Material, 12);
                 return pingA;
             }
 
@@ -369,7 +369,7 @@ namespace CoreGMIC.Heavy
 
             for (int step = 0; step < r; step++)
             {
-                Graphics.Blit(cur, next, Material, 17);
+                Graphics.Blit(cur, next, Material, 13);
                 cur = next;
                 next = (cur == pingA) ? pingB : pingA;
             }
@@ -377,8 +377,8 @@ namespace CoreGMIC.Heavy
             if (q > 0)
             {
                 Material.SetInt("_MorphoSize", 2 * q + 1);
-                Graphics.Blit(cur, scratch, Material, 15);
-                Graphics.Blit(scratch, next, Material, 16);
+                Graphics.Blit(cur, scratch, Material, 11);
+                Graphics.Blit(scratch, next, Material, 12);
                 cur = next;
             }
             else if (cur == input)

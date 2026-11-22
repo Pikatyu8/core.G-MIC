@@ -24,33 +24,20 @@ Shader "CoreGMIC/Lava"
         ZWrite Off
         ZTest Always
 
-        // Pass 0: Multiply norm(source) * smoothPlasma -> gradient_norm
+        // Pass 0: Multiply norm(source) * smoothPlasma
         Pass
         {
             CGPROGRAM
             #pragma target 4.0
             #pragma vertex vert
-            #pragma fragment fragMulGradNorm
+            #pragma fragment fragMulField
 
-            float SampleField(float2 uv)
+            float4 fragMulField(v2f i) : SV_Target
             {
-                float n = tex2Dlod(_MainTex, float4(uv, 0.0, 0.0)).r;
-                float p = tex2Dlod(_PlasmaTex, float4(uv, 0.0, 0.0)).r;
-                return n * p;
-            }
-
-            float4 fragMulGradNorm(v2f i) : SV_Target
-            {
-                float2 tx = _MainTex_TexelSize.xy;
-                float xP = SampleField(saturate(i.uv + float2(tx.x, 0.0)));
-                float xM = SampleField(saturate(i.uv - float2(tx.x, 0.0)));
-                float yP = SampleField(saturate(i.uv + float2(0.0, tx.y)));
-                float yM = SampleField(saturate(i.uv - float2(0.0, tx.y)));
-
-                float dx = 0.5 * (xP - xM);
-                float dy = 0.5 * (yP - yM);
-                float gn = sqrt(dx * dx + dy * dy);
-                return float4(gn, gn, gn, 1.0);
+                float n = tex2D(_MainTex, i.uv).r;
+                float p = tex2D(_PlasmaTex, i.uv).r;
+                float v = n * p;
+                return float4(v, v, v, 1.0);
             }
             ENDCG
         }

@@ -38,6 +38,7 @@ Because of the NonCommercial (NC) and ShareAlike (SA) terms of CC BY-NC-SA 3.0 N
   - `fx_quadtree` (`QuadtreeVariationsFilter.cs`, `GpuQuadtree.cs`, `GmicQuadtree.shader`)
   - `fx_stencil` (`StencilFilter.cs`, `GmicStencil.shader`)
   - `fx_vector_painting` (`VectorPaintingFilter.cs`, `GmicVectorPainting.shader`)
+  - `fx_warp_by_intensity` (`WarpByIntensityFilter.cs`, `GpuWarp` in `GpuOps.cs` / `GmicOps.shader`)
   - Shared GPU equivalents of G'MIC primitives: `shapeaverage0` (`GpuShapeAverage.cs`), `watershed` (`GpuWatershed.cs`), `plasma` (`PlasmaGenerator.cs`), `smooth_anisotropic`, `normalize_local`, and color space transforms (`GpuOps.cs`, `GmicOps.shader`, `GmicColorSpaces.cginc`).
 
 ### 2. G'MIC Community Filters (`GreycLab/gmic-community`)

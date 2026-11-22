@@ -38,6 +38,7 @@ namespace CoreGMIC.Heavy
             _stats != null &&
             _stats.IsAvailable &&
             GpuNorm.IsAvailable &&
+            GpuGradientNorm.IsAvailable &&
             GpuAnisoSmooth.IsAvailable;
 
         public LavaFilter()
@@ -145,8 +146,9 @@ namespace CoreGMIC.Heavy
                 gradRt = GpuUtils.GetTempRt(w, h, floatFmt);
                 Material.SetTexture("_PlasmaTex", activePlasma);
                 Graphics.Blit(normRt, gradRt, Material, 0);
+                GpuGradientNorm.ComputeGradientNorm(gradRt, normRt, scalarMode: true);
 
-                _stats.ComputeHistogramCdf(gradRt, HistOptions);
+                _stats.ComputeHistogramCdf(normRt, HistOptions);
                 Material.SetTexture("_CdfTex", _stats.CdfTexture);
                 Material.SetTexture("_PaletteTex", _hotPaletteTex);
                 Material.SetTexture("_BaseTex", source);
@@ -154,14 +156,14 @@ namespace CoreGMIC.Heavy
                 if (_sharpness > 0.0001f)
                 {
                     mappedRt = GpuUtils.GetTempRt(w, h, colorFmt);
-                    Graphics.Blit(gradRt, mappedRt, Material, 1);
+                    Graphics.Blit(normRt, mappedRt, Material, 1);
 
                     Material.SetFloat("_Sharpness", _sharpness);
                     Graphics.Blit(mappedRt, destination, Material, 2);
                 }
                 else
                 {
-                    Graphics.Blit(gradRt, destination, Material, 1);
+                    Graphics.Blit(normRt, destination, Material, 1);
                 }
             }
             finally

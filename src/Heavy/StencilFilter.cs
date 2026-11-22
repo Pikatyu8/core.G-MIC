@@ -24,7 +24,7 @@ namespace CoreGMIC.Heavy
         public override string Id => "fx_stencil";
         public override string DisplayName => "Stencil";
         public override string Description => "Creates a crisp two-tone or posterized stencil pattern.";
-        public override FilterCategory Category => FilterCategory.Standard;
+        public override FilterCategory Category => FilterCategory.Heavy;
         public override bool IsAvailable =>
             base.IsAvailable &&
             GpuBlur.IsAvailable &&
