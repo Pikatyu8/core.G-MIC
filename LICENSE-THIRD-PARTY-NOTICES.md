@@ -2,7 +2,7 @@
 
 ## Repository License Overview
 
-Unless explicitly noted otherwise below, the source code, shaders, and G'MIC-derived ports in **core.G'MIC** are licensed under the **CeCILL Free Software License Agreement v2.1** (see `LICENSE` in the repository root, or <https://cecill.info/licences/Licence_CeCILL_V2.1-en.html>).
+Unless explicitly noted otherwise below, the source code, shaders, and G'MIC-derived ports in **core.G'MIC** are licensed under the **CeCILL Free Software License Agreement v2.1** (see `LICENSE-CeCILL_V2.1` in the repository root, or <https://cecill.info/licences/Licence_CeCILL_V2.1-en.html>).
 
 ### License Exception: Halftone Shapes (`CC BY-NC-SA 3.0 NZ`)
 
