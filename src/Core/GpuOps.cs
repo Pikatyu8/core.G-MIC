@@ -100,6 +100,67 @@ namespace CoreGMIC.Core
             BlurInPlace(destination, sigmaPx);
         }
 
+        public static void BlurSeparable(RenderTexture source, RenderTexture destination, float sigmaX, float sigmaY)
+        {
+            if (source == null || destination == null)
+            {
+                return;
+            }
+
+            Material mat = GpuOpsResources.OpsMaterial;
+            bool doX = sigmaX > 0.05f;
+            bool doY = sigmaY > 0.05f;
+            if (mat == null || (!doX && !doY))
+            {
+                if (source != destination)
+                {
+                    Graphics.Blit(source, destination);
+                }
+                return;
+            }
+
+            int passesX = doX ? Mathf.Max(1, Mathf.CeilToInt((sigmaX * sigmaX) / (MaxSigmaPerPass * MaxSigmaPerPass))) : 0;
+            int passesY = doY ? Mathf.Max(1, Mathf.CeilToInt((sigmaY * sigmaY) / (MaxSigmaPerPass * MaxSigmaPerPass))) : 0;
+            float perPassX = doX ? (sigmaX / Mathf.Sqrt(passesX)) : 0f;
+            float perPassY = doY ? (sigmaY / Mathf.Sqrt(passesY)) : 0f;
+            int totalPasses = passesX + passesY;
+
+            RenderTextureReadWrite rw = destination.sRGB ? RenderTextureReadWrite.sRGB : RenderTextureReadWrite.Linear;
+            RenderTexture scratchA = null;
+            RenderTexture scratchB = null;
+
+            try
+            {
+                if (totalPasses > 1 || source == destination)
+                {
+                    scratchA = GpuUtils.GetTempRt(destination.width, destination.height, destination.format, FilterMode.Bilinear, rw);
+                }
+                if (totalPasses > 2 || (totalPasses > 1 && source == destination))
+                {
+                    scratchB = GpuUtils.GetTempRt(destination.width, destination.height, destination.format, FilterMode.Bilinear, rw);
+                }
+
+                RenderTexture curr = source;
+                for (int p = 0; p < totalPasses; p++)
+                {
+                    bool isX = p < passesX;
+                    int axisPass = isX ? 0 : 1;
+                    float sigma = isX ? perPassX : perPassY;
+                    bool isLast = (p == totalPasses - 1);
+                    RenderTexture next = isLast ? destination : ((curr == scratchA) ? scratchB : scratchA);
+
+                    mat.SetFloat("_SigmaPx", sigma);
+                    Graphics.Blit(curr, next, mat, axisPass);
+                    curr = next;
+                }
+            }
+            finally
+            {
+                GpuUtils.ReleaseTemp(scratchA);
+                GpuUtils.ReleaseTemp(scratchB);
+            }
+        }
+
         public static void BlurInPlace(RenderTexture target, float sigmaPx)
         {
             if (target == null || sigmaPx <= 0.05f)
@@ -726,6 +787,64 @@ namespace CoreGMIC.Core
 
             mat.SetInt("_ScalarMode", scalarMode ? 1 : 0);
             Graphics.Blit(source, destination, mat, 16);
+        }
+    }
+
+    public static class GpuNoise
+    {
+        public static readonly string[] NoiseTypeChoices =
+        {
+            "Gaussian",
+            "Uniform",
+            "Salt and Pepper",
+            "Poisson"
+        };
+
+        public static bool IsAvailable => GpuOpsResources.IsAvailable;
+
+        public static void ApplyNoise(
+            RenderTexture source,
+            RenderTexture destination,
+            float amount,
+            int noiseType,
+            uint seed)
+        {
+            if (source == null || destination == null)
+            {
+                return;
+            }
+
+            Material mat = GpuOpsResources.OpsMaterial;
+            if (mat == null || amount <= 1e-5f)
+            {
+                if (source != destination)
+                {
+                    Graphics.Blit(source, destination);
+                }
+                return;
+            }
+
+            RenderTexture scratch = null;
+            RenderTexture inputRt = source;
+            if (source == destination)
+            {
+                RenderTextureReadWrite rw = source.sRGB ? RenderTextureReadWrite.sRGB : RenderTextureReadWrite.Linear;
+                scratch = GpuUtils.GetTempRt(source.width, source.height, source.format, source.filterMode, rw);
+                Graphics.Blit(source, scratch);
+                inputRt = scratch;
+            }
+
+            try
+            {
+                mat.SetInt("_NoiseType", noiseType);
+                mat.SetFloat("_NoiseAmount", amount);
+                mat.SetInt("_NoiseSeed", unchecked((int)seed));
+                Graphics.Blit(inputRt, destination, mat, 17);
+            }
+            finally
+            {
+                GpuUtils.ReleaseTemp(scratch);
+            }
         }
     }
 }

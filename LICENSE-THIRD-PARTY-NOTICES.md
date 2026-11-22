@@ -32,6 +32,7 @@ Because of the NonCommercial (NC) and ShareAlike (SA) terms of CC BY-NC-SA 3.0 N
   - `fx_imageobject3d` (`ImageObject3DFilter.cs`, `ImageObject3DMeshBuilder.cs`, `GmicImageObject3D.shader`)
   - `fx_isophotes` / `isophotes` (`IsophotesFilter.cs`, `GmicIsophotes.shader`)
   - `fx_lava` (`LavaFilter.cs`, `GmicLava.shader`) and `_palette_hot` LUT data (`GmicPaletteLoader.cs`)
+  - `fx_noise` (`NoiseFilter.cs`, `GpuNoise` in `GpuOps.cs` / `GmicOps.shader`)
   - `fx_8bits` (`Oldschool8BitsFilter.cs`, `Gmic8Bits.shader`)
   - `fx_pack_ellipses` (`PackEllipsesFilter.cs`, `GmicPackEllipses.shader`, `GmicPackEllipses.compute`)
   - `fx_quadtree` (`QuadtreeVariationsFilter.cs`, `GpuQuadtree.cs`, `GmicQuadtree.shader`)
@@ -46,6 +47,8 @@ Because of the NonCommercial (NC) and ShareAlike (SA) terms of CC BY-NC-SA 3.0 N
 - **Sylvie Alexandre / samj (`sylvie_alexandre.gmic`, Free Software / CeCILL v2.0+):**
   - `samj_Barbouillage_Paint_Daub` (`BarbouillagePaintDaubFilter.cs`, `GmicBarbouillage.shader`)
   - `samj_chalkitup` (`ChalkItUpFilter.cs`, `GmicChalkItUp.shader`, originally inspired by Lylejk's tutorial)
+- **Andy Kelday / Garagecoder (`andy_kelday.gmic`, Copyright Andy Kelday, dual-licensed CeCILL-C v1 / CeCILL v2.1; used under CeCILL v2.1):**
+  - `fx_gcd_crt` (`CrtSubPixelsFilter.cs`, `GmicCrtSubPixels.shader`)
 - **Iain Fergusson (`iain_fergusson.gmic`, Copyright Iain Fergusson, CC BY-NC-SA 3.0 NZ):**
   - `iain_halftone_shapes` (`HalftoneShapesFilter.cs`, `GmicHalftoneShapes.shader`)
 

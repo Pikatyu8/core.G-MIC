@@ -11,6 +11,7 @@ Shader "CoreGMIC/Ops"
     sampler2D _BaseTex;
     sampler2D _TensorTex;
 
+    #define GMIC_USE_HASH 1
     #define GMIC_USE_SOBEL 1
     #define GMIC_USE_TENSOR 1
     #include "GmicColorSpaces.cginc"
@@ -30,6 +31,44 @@ Shader "CoreGMIC/Ops"
     float _AnisoSharpness;
     float _AnisoAnisotropy;
     float _AnisoDl;
+
+    int _NoiseType;
+    float _NoiseAmount;
+    uint _NoiseSeed;
+
+    float ApplyNoiseScalar(float val01, float amount, int noiseType, uint seed)
+    {
+        if (amount <= 1e-5)
+            return val01;
+
+        uint h1 = HashU32(seed);
+        uint h2 = HashU32(h1 ^ 0x85EBCA6Bu);
+        float u1 = max(1e-6, (float)(h1 & 0xFFFFu) / 65535.0);
+        float u2 = (float)(h2 & 0xFFFFu) / 65535.0;
+
+        if (noiseType == 0)
+        {
+            float z = sqrt(-2.0 * log(u1)) * cos(6.28318530718 * u2);
+            return val01 + z * (amount / 255.0);
+        }
+        if (noiseType == 1)
+        {
+            return val01 + (u1 * 2.0 - 1.0) * (amount / 255.0);
+        }
+        if (noiseType == 2)
+        {
+            float prob = saturate(amount * 0.01);
+            if (u1 < prob)
+                return (u2 < 0.5) ? 0.0 : 1.0;
+            return val01;
+        }
+
+        float scale = max(1e-4, amount / 255.0);
+        float lambda = max(0.0, val01 * 255.0 * scale);
+        float zP = sqrt(-2.0 * log(u1)) * cos(6.28318530718 * u2);
+        float sampleP = max(0.0, lambda + sqrt(lambda) * zP);
+        return sampleP / (255.0 * scale);
+    }
 
     float4 RunGaussian1DRgba(float2 uv, float2 axisTexel)
     {
@@ -512,6 +551,31 @@ Shader "CoreGMIC/Ops"
                 }
 
                 return float4(gn, gn, gn, 1.0);
+            }
+            ENDCG
+        }
+
+        // Pass 17: G'MIC Noise (0=Gaussian, 1=Uniform, 2=Salt&Pepper, 3=Poisson) preserving alpha
+        Pass
+        {
+            CGPROGRAM
+            #pragma target 4.0
+            #pragma vertex vert
+            #pragma fragment fragNoise
+
+            float4 fragNoise(v2f i) : SV_Target
+            {
+                float4 c = tex2Dlod(_MainTex, float4(i.uv, 0.0, 0.0));
+                if (_NoiseAmount <= 1e-5)
+                    return c;
+
+                uint2 px = (uint2)max(float2(0.0, 0.0), floor(i.uv * _MainTex_TexelSize.zw));
+                uint baseSeed = px.x * 73856093u ^ px.y * 19349663u ^ _NoiseSeed;
+
+                float r = ApplyNoiseScalar(c.r, _NoiseAmount, _NoiseType, baseSeed ^ 0x1111u);
+                float g = ApplyNoiseScalar(c.g, _NoiseAmount, _NoiseType, baseSeed ^ 0x2222u);
+                float b = ApplyNoiseScalar(c.b, _NoiseAmount, _NoiseType, baseSeed ^ 0x3333u);
+                return float4(r, g, b, c.a);
             }
             ENDCG
         }

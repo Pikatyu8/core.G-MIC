@@ -82,6 +82,8 @@ namespace CoreGMIC
             FilterManager.Register(new LavaFilter());
             FilterManager.Register(new ImageObject3DFilter());
             FilterManager.Register(new FireEdgesFilter());
+            FilterManager.Register(new CrtSubPixelsFilter());
+            FilterManager.Register(new NoiseFilter());
         }
 
         private void OnGameCamerasSceneInit(On.GameCameras.orig_SceneInit orig, GameCameras self)
