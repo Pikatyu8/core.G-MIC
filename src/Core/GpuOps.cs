@@ -711,4 +711,21 @@ namespace CoreGMIC.Core
             Graphics.Blit(source, destination, mat, 15);
         }
     }
+
+    public static class GpuGradientNorm
+    {
+        public static bool IsAvailable => GpuOpsResources.IsAvailable;
+
+        public static void ComputeGradientNorm(RenderTexture source, RenderTexture destination, bool scalarMode = false)
+        {
+            Material mat = GpuOpsResources.OpsMaterial;
+            if (mat == null || source == null || destination == null)
+            {
+                return;
+            }
+
+            mat.SetInt("_ScalarMode", scalarMode ? 1 : 0);
+            Graphics.Blit(source, destination, mat, 16);
+        }
+    }
 }

@@ -26,6 +26,7 @@ Because of the NonCommercial (NC) and ShareAlike (SA) terms of CC BY-NC-SA 3.0 N
   - `fx_cubism` / `cubism` (`CubismFilter.cs`, `GmicCubism.shader`, `GmicCubismStep.compute`)
   - `fx_cutout` (`CutoutFilter.cs`, `GmicCutout.shader`, `GmicCutout.compute`)
   - `fx_edges` (`EdgesFilter.cs`, `GmicEdges.shader`)
+  - `fx_fire_edges` / `fire_edges` (`FireEdgesFilter.cs`, `GmicFireEdges.shader`)
   - `fx_frame_cube` / `frame_cube` (`FrameCubeFilter.cs`, `GmicFrameCube.shader`)
   - `fx_gradient_norm` (`GradientNormFilter.cs`, `GmicGradientNorm.shader`)
   - `fx_imageobject3d` (`ImageObject3DFilter.cs`, `ImageObject3DMeshBuilder.cs`, `GmicImageObject3D.shader`)

@@ -22,6 +22,7 @@ Shader "CoreGMIC/Ops"
     int _Width;
     int _Height;
     int _ChannelMode;
+    int _ScalarMode;
     float _SigmaPx;
     float _JfaStep;
     float _FallbackDistance;
@@ -470,6 +471,47 @@ Shader "CoreGMIC/Ops"
                 float4 src = tex2D(_MainTex, i.uv);
                 float n = length(src.rgb);
                 return float4(n, n, n, src.a);
+            }
+            ENDCG
+        }
+
+        // Pass 16: G'MIC gradient_norm (scheme=0 centered, boundary=1 Neumann)
+        Pass
+        {
+            CGPROGRAM
+            #pragma target 4.0
+            #pragma vertex vert
+            #pragma fragment fragGradientNorm
+
+            float4 fragGradientNorm(v2f i) : SV_Target
+            {
+                float2 tx = _MainTex_TexelSize.xy;
+                float gn;
+
+                if (_ScalarMode > 0)
+                {
+                    float xP = tex2Dlod(_MainTex, float4(saturate(i.uv + float2(tx.x, 0.0)), 0.0, 0.0)).r;
+                    float xM = tex2Dlod(_MainTex, float4(saturate(i.uv - float2(tx.x, 0.0)), 0.0, 0.0)).r;
+                    float yP = tex2Dlod(_MainTex, float4(saturate(i.uv + float2(0.0, tx.y)), 0.0, 0.0)).r;
+                    float yM = tex2Dlod(_MainTex, float4(saturate(i.uv - float2(0.0, tx.y)), 0.0, 0.0)).r;
+
+                    float dx = 0.5 * (xP - xM);
+                    float dy = 0.5 * (yP - yM);
+                    gn = sqrt(dx * dx + dy * dy);
+                }
+                else
+                {
+                    float3 xP = tex2Dlod(_MainTex, float4(saturate(i.uv + float2(tx.x, 0.0)), 0.0, 0.0)).rgb;
+                    float3 xM = tex2Dlod(_MainTex, float4(saturate(i.uv - float2(tx.x, 0.0)), 0.0, 0.0)).rgb;
+                    float3 yP = tex2Dlod(_MainTex, float4(saturate(i.uv + float2(0.0, tx.y)), 0.0, 0.0)).rgb;
+                    float3 yM = tex2Dlod(_MainTex, float4(saturate(i.uv - float2(0.0, tx.y)), 0.0, 0.0)).rgb;
+
+                    float3 dx = 0.5 * (xP - xM);
+                    float3 dy = 0.5 * (yP - yM);
+                    gn = sqrt(dot(dx, dx) + dot(dy, dy));
+                }
+
+                return float4(gn, gn, gn, 1.0);
             }
             ENDCG
         }
